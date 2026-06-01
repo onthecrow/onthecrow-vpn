@@ -23,11 +23,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class OnthecrowVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val xrayEngine = PlatformXrayEngine()
     private val sanitizer = XrayConfigSanitizer()
+    private val operationMutex = Mutex()
     private var tunFd: Int? = null
     private val mtu = 1500
     private val isDebuggable: Boolean
@@ -37,61 +40,64 @@ class OnthecrowVpnService : VpnService() {
         when (intent?.action) {
             ACTION_CONNECT -> {
                 startAsForeground()
-                scope.launch { connect() }
+                val xrayJson = intent.getStringExtra(EXTRA_XRAY_JSON)
+                scope.launch { runConnect(xrayJson) }
             }
-            ACTION_DISCONNECT -> scope.launch { disconnect(stopService = true) }
+            ACTION_DISCONNECT -> scope.launch { runDisconnect(stopService = true) }
         }
         return Service.START_STICKY
     }
 
     override fun onDestroy() {
-        runBlocking { stopTunnel() }
+        runBlocking { operationMutex.withLock { stopTunnel() } }
         scope.cancel()
         super.onDestroy()
     }
 
-    private suspend fun connect() {
-        val config = AndroidVpnRuntime.pendingConfig
-        if (config == null) {
-            fail("No validated configuration is available")
-            return
-        }
-
-        runCatching {
-            stopTunnel()
-            AndroidVpnSocketProtector.setProtector(::protect)
-            val vpnInterface = Builder()
-                .setSession("Onthecrow VPN")
-                .setMtu(mtu)
-                .addAddress("10.77.0.2", 32)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("1.1.1.1")
-                .establish()
-                ?: error("Android refused to establish VPN interface")
-            val fd = vpnInterface.detachFd()
-            tunFd = fd
-            val runtimeJson = sanitizer.withTunInbound(
-                config.xrayJson,
-                mtu = mtu,
-                logLevel = if (isDebuggable) "info" else "none",
-            )
-            xrayEngine.setTunFd(fd)
-            when (val result = xrayEngine.start(runtimeJson)) {
-                XrayRunResult.Success -> AndroidVpnRuntime.status.value = ConnectionStatus.Connected
-                is XrayRunResult.Failure -> fail(result.message)
+    private suspend fun runConnect(xrayJson: String?) {
+        operationMutex.withLock {
+            if (xrayJson.isNullOrBlank()) {
+                fail("No validated configuration is available")
+                return
             }
-        }.onFailure { error ->
-            fail(error.message ?: "Failed to start VPN")
+            runCatching {
+                stopTunnel()
+                AndroidVpnSocketProtector.setProtector(::protect)
+                val vpnInterface = Builder()
+                    .setSession("Onthecrow VPN")
+                    .setMtu(mtu)
+                    .addAddress("10.77.0.2", 32)
+                    .addRoute("0.0.0.0", 0)
+                    .addDnsServer("1.1.1.1")
+                    .establish()
+                    ?: error("Android refused to establish VPN interface")
+                val fd = vpnInterface.detachFd()
+                tunFd = fd
+                val runtimeJson = sanitizer.withTunInbound(
+                    xrayJson,
+                    mtu = mtu,
+                    logLevel = if (isDebuggable) "info" else "none",
+                )
+                xrayEngine.setTunFd(fd)
+                when (val result = xrayEngine.start(runtimeJson)) {
+                    XrayRunResult.Success -> AndroidVpnRuntime.status.value = ConnectionStatus.Connected
+                    is XrayRunResult.Failure -> fail(result.message)
+                }
+            }.onFailure { error ->
+                fail(error.message ?: "Failed to start VPN")
+            }
         }
     }
 
-    private suspend fun disconnect(stopService: Boolean) {
-        AndroidVpnRuntime.status.value = ConnectionStatus.Disconnecting
-        stopTunnel()
-        AndroidVpnRuntime.status.value = ConnectionStatus.Disconnected
-        if (stopService) {
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
+    private suspend fun runDisconnect(stopService: Boolean) {
+        operationMutex.withLock {
+            AndroidVpnRuntime.status.value = ConnectionStatus.Disconnecting
+            stopTunnel()
+            AndroidVpnRuntime.status.value = ConnectionStatus.Disconnected
+            if (stopService) {
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
     }
 
@@ -106,10 +112,12 @@ class OnthecrowVpnService : VpnService() {
 
     private fun fail(message: String) {
         scope.launch {
-            stopTunnel()
-            AndroidVpnRuntime.status.value = ConnectionStatus.Error(message)
-            ServiceCompat.stopForeground(this@OnthecrowVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            operationMutex.withLock {
+                stopTunnel()
+                AndroidVpnRuntime.status.value = ConnectionStatus.Error(message)
+                ServiceCompat.stopForeground(this@OnthecrowVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
         }
     }
 
@@ -155,6 +163,7 @@ class OnthecrowVpnService : VpnService() {
     companion object {
         const val ACTION_CONNECT = "com.onthecrow.onthecrowvpn.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.onthecrow.onthecrowvpn.vpn.DISCONNECT"
+        const val EXTRA_XRAY_JSON = "com.onthecrow.onthecrowvpn.vpn.EXTRA_XRAY_JSON"
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001
     }

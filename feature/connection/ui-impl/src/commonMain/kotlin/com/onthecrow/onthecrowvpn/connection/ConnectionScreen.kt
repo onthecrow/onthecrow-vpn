@@ -1,6 +1,8 @@
 package com.onthecrow.onthecrowvpn.connection
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,19 +19,21 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -37,13 +41,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.onthecrow.onthecrowvpn.connection.model.ConnectionConfigSummary
+import com.onthecrow.onthecrowvpn.connection.model.ConfigBundle
+import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.ui.ConnectedGreen
 import com.onthecrow.onthecrowvpn.ui.DisconnectedGray
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 
 @Composable
 internal fun ConnectionScreen(
@@ -74,7 +86,7 @@ internal fun ConnectionScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = 20.dp)
-                    .padding(bottom = 176.dp),
+                    .padding(bottom = if (state.bundle != null) 176.dp else 20.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(
@@ -83,131 +95,217 @@ internal fun ConnectionScreen(
                     color = MaterialTheme.colorScheme.onBackground,
                     fontWeight = FontWeight.SemiBold,
                 )
-                OutlinedTextField(
-                    value = state.rawInput,
-                    onValueChange = { onEvent(ConnectionEvent.OnInputChanged(it)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Xray configuration") },
-                    minLines = 5,
-                    maxLines = 8,
-                    isError = state.validationError != null,
-                    supportingText = {
-                        state.validationError?.let { Text(it) }
-                    },
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    OutlinedButton(
-                        enabled = state.canApply,
-                        onClick = { onEvent(ConnectionEvent.OnApplyClick) },
-                    ) {
-                        if (state.isValidating) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                            )
-                        } else {
-                            Text("Apply")
-                        }
-                    }
-                }
-                state.validatedConfig?.summary?.let { summary ->
-                    ConfigSummaryCard(summary)
+                IdentifierSlot(state = state, onEvent = onEvent)
+                state.bundle?.let { bundle ->
+                    BundleMetadataRows(bundle)
+                    ConfigsList(
+                        configs = bundle.configs,
+                        selectedConfigId = state.selectedConfigId,
+                        onSelect = { onEvent(ConnectionEvent.OnConfigSelected(it)) },
+                    )
                 }
             }
 
-            ConnectButton(
-                state = state,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 28.dp),
-                onClick = { onEvent(ConnectionEvent.OnConnectClick) },
+            if (state.selectedConfig != null) {
+                ConnectButton(
+                    state = state,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 28.dp),
+                    onClick = { onEvent(ConnectionEvent.OnConnectClick) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun IdentifierSlot(
+    state: ConnectionState,
+    onEvent: (ConnectionEvent) -> Unit,
+) {
+    if (state.isEditingId) {
+        val focusRequester = remember { FocusRequester() }
+        val keyboard = LocalSoftwareKeyboardController.current
+        LaunchedEffect(Unit) {
+            focusRequester.requestFocus()
+            keyboard?.show()
+        }
+        OutlinedTextField(
+            value = state.idInput,
+            onValueChange = { onEvent(ConnectionEvent.OnIdInputChanged(it)) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester),
+            label = { Text("Configuration ID") },
+            singleLine = true,
+            enabled = !state.isLoadingBundle,
+            isError = state.bundleError != null,
+            supportingText = { state.bundleError?.let { Text(it) } },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = { onEvent(ConnectionEvent.OnLoadClick) }),
+            trailingIcon = {
+                if (state.isLoadingBundle) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    IconButton(
+                        onClick = { onEvent(ConnectionEvent.OnLoadClick) },
+                        enabled = state.canLoad,
+                    ) {
+                        Text(
+                            text = "→",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = if (state.canLoad) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            },
+                        )
+                    }
+                }
+            },
+        )
+    } else {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = ConnectedGreen.copy(alpha = 0.18f),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = state.idInput,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                IconButton(onClick = { onEvent(ConnectionEvent.OnEditIdClick) }) {
+                    Text(
+                        text = "✎",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BundleMetadataRows(bundle: ConfigBundle) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        bundle.name?.takeIf { it.isNotBlank() }?.let { name ->
+            Text(
+                text = "Config name: $name",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = "Created at: ${formatTimestamp(bundle.createdAt)}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = "Updated at: ${formatTimestamp(bundle.updatedAt)}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ConfigsList(
+    configs: List<RemoteConfig>,
+    selectedConfigId: String?,
+    onSelect: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        configs.forEach { config ->
+            ConfigItemCard(
+                config = config,
+                isSelected = config.id == selectedConfigId,
+                onClick = { onSelect(config.id) },
             )
         }
     }
 }
 
 @Composable
-private fun ConfigSummaryCard(summary: ConnectionConfigSummary) {
+private fun ConfigItemCard(
+    config: RemoteConfig,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    val container =
+        if (isSelected) ConnectedGreen.copy(alpha = 0.18f)
+        else MaterialTheme.colorScheme.surfaceContainer
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = container),
     ) {
-        Column(
+        Row(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = summary.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = endpointText(summary),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                AssistChip(
-                    onClick = {},
-                    label = { Text(summary.protocol.uppercase()) },
-                )
-            }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                summary.transport?.let { MetadataChip(it) }
-                summary.security?.let { MetadataChip(it) }
-                summary.sni?.let { MetadataChip("SNI $it") }
-            }
-            if (summary.outboundCount > 1) {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "${summary.outboundCount} outbounds detected; the first runnable outbound will be used.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = config.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            } else if (summary.isAdvanced) {
                 Text(
-                    text = "Advanced Xray config",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = subtitleFor(config),
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            Spacer(Modifier.size(12.dp))
+            SelectionIndicator(isSelected = isSelected)
         }
     }
 }
 
 @Composable
-private fun MetadataChip(text: String) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.secondaryContainer)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+private fun SelectionIndicator(isSelected: Boolean) {
+    if (isSelected) {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(ConnectedGreen),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "✓",
+                color = MaterialTheme.colorScheme.onPrimary,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+    } else {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .border(
+                    width = 1.5.dp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    shape = CircleShape,
+                ),
         )
     }
 }
@@ -231,7 +329,7 @@ private fun ConnectButton(
         ),
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            if (state.isBusy && !state.isValidating) {
+            if (state.isBusy) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(22.dp),
                     color = MaterialTheme.colorScheme.onPrimary,
@@ -242,7 +340,7 @@ private fun ConnectButton(
             Text(
                 text = when {
                     connected -> "Connected"
-                    state.isBusy && !state.isValidating -> "Connecting"
+                    state.isBusy -> "Connecting"
                     else -> "Connect"
                 },
                 style = MaterialTheme.typography.labelLarge,
@@ -252,8 +350,25 @@ private fun ConnectButton(
     }
 }
 
-private fun endpointText(summary: ConnectionConfigSummary): String {
-    val address = summary.address ?: return "Endpoint is defined inside Xray JSON"
-    val port = summary.port?.let { ":$it" }.orEmpty()
-    return address + port
+private fun subtitleFor(config: RemoteConfig): String {
+    val scheme = config.url.substringBefore("://", missingDelimiterValue = "")
+    val location = config.location?.uppercase()
+    return when {
+        !location.isNullOrBlank() && scheme.isNotBlank() -> "$location · $scheme"
+        !location.isNullOrBlank() -> location
+        scheme.isNotBlank() -> scheme
+        else -> ""
+    }
+}
+
+private fun formatTimestamp(epochMillis: Long): String {
+    if (epochMillis <= 0L) return "—"
+    val instant = Instant.fromEpochMilliseconds(epochMillis)
+    val ldt = instant.toLocalDateTime(TimeZone.currentSystemDefault())
+    val day = ldt.dayOfMonth.toString().padStart(2, '0')
+    val month = ldt.monthNumber.toString().padStart(2, '0')
+    val year = ldt.year.toString()
+    val hour = ldt.hour.toString().padStart(2, '0')
+    val minute = ldt.minute.toString().padStart(2, '0')
+    return "$day.$month.$year $hour:$minute"
 }

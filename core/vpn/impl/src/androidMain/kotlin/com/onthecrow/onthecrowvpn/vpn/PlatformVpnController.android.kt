@@ -2,19 +2,18 @@ package com.onthecrow.onthecrowvpn.vpn
 
 import android.content.Intent
 import android.os.Build
-import com.onthecrow.onthecrowvpn.connection.model.ValidatedConnectionConfig
 import kotlinx.coroutines.flow.StateFlow
 
 actual class PlatformVpnController : VpnController {
     override val status: StateFlow<ConnectionStatus> = AndroidVpnRuntime.status
 
-    override suspend fun connect(config: ValidatedConnectionConfig): ConnectResult {
+    override suspend fun connect(xrayJson: String): ConnectResult {
         return runCatching {
             val context = AndroidVpnEnvironment.applicationContext
-            AndroidVpnRuntime.pendingConfig = config
             AndroidVpnRuntime.status.value = ConnectionStatus.Connecting
             val intent = Intent(context, OnthecrowVpnService::class.java)
                 .setAction(OnthecrowVpnService.ACTION_CONNECT)
+                .putExtra(OnthecrowVpnService.EXTRA_XRAY_JSON, xrayJson)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

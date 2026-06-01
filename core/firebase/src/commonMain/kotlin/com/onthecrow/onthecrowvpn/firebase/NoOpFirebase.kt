@@ -1,5 +1,8 @@
 package com.onthecrow.onthecrowvpn.firebase
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
+
 internal object NoOpAnalyticsTracker : AnalyticsTracker {
     override fun logEvent(
         name: String,
@@ -29,4 +32,6 @@ internal object NoOpCrashReporter : CrashReporter {
 
 internal object NoOpFirestoreClient : FirestoreClient {
     override val isAvailable: Boolean = false
+    override fun observeBundle(bundleId: String): Flow<BundleResult> =
+        flowOf(BundleResult.Unavailable)
 }

@@ -2,15 +2,19 @@ package com.onthecrow.onthecrowvpn.connection.di
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import com.onthecrow.onthecrowvpn.connection.ObserveSavedConnectionConfigUseCaseImpl
-import com.onthecrow.onthecrowvpn.connection.SaveConnectionConfigUseCaseImpl
-import com.onthecrow.onthecrowvpn.connection.ValidateConnectionConfigUseCaseImpl
-import com.onthecrow.onthecrowvpn.connection.data.ConnectionConfigRepositoryImpl
+import com.onthecrow.onthecrowvpn.connection.ActiveBundleOrchestrator
+import com.onthecrow.onthecrowvpn.connection.LoadBundleUseCaseImpl
+import com.onthecrow.onthecrowvpn.connection.ObserveActiveBundleUseCaseImpl
+import com.onthecrow.onthecrowvpn.connection.PrepareConnectionConfigUseCaseImpl
+import com.onthecrow.onthecrowvpn.connection.SelectConfigUseCaseImpl
+import com.onthecrow.onthecrowvpn.connection.VpnSyncWorker
+import com.onthecrow.onthecrowvpn.connection.data.BundleRepositoryImpl
 import com.onthecrow.onthecrowvpn.connection.data.datastore.ConnectionConfigPreferencesDataSource
-import com.onthecrow.onthecrowvpn.connection.domain.ConnectionConfigRepository
-import com.onthecrow.onthecrowvpn.connection.domain.ObserveSavedConnectionConfigUseCase
-import com.onthecrow.onthecrowvpn.connection.domain.SaveConnectionConfigUseCase
-import com.onthecrow.onthecrowvpn.connection.domain.ValidateConnectionConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.BundleRepository
+import com.onthecrow.onthecrowvpn.connection.domain.LoadBundleUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.ObserveActiveBundleUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
 import com.onthecrow.onthecrowvpn.datastore.DataStoreFactory
 import org.koin.core.qualifier.named
 import org.koin.dsl.bind
@@ -26,10 +30,14 @@ val connectionLogicModule = module {
     single {
         ConnectionConfigPreferencesDataSource(
             dataStore = get(named(CONNECTION_CONFIG_DATA_STORE_QUALIFIER)),
+            json = get(),
         )
     }
-    single { ConnectionConfigRepositoryImpl(get()) } bind ConnectionConfigRepository::class
-    single { ObserveSavedConnectionConfigUseCaseImpl(get()) } bind ObserveSavedConnectionConfigUseCase::class
-    single { SaveConnectionConfigUseCaseImpl(get()) } bind SaveConnectionConfigUseCase::class
-    single { ValidateConnectionConfigUseCaseImpl(get(), get()) } bind ValidateConnectionConfigUseCase::class
+    single { BundleRepositoryImpl(get()) } bind BundleRepository::class
+    single { ActiveBundleOrchestrator(get(), get(), get()) }
+    single { ObserveActiveBundleUseCaseImpl(get()) } bind ObserveActiveBundleUseCase::class
+    single { LoadBundleUseCaseImpl(get()) } bind LoadBundleUseCase::class
+    single { SelectConfigUseCaseImpl(get()) } bind SelectConfigUseCase::class
+    single { PrepareConnectionConfigUseCaseImpl(get()) } bind PrepareConnectionConfigUseCase::class
+    single(createdAtStart = true) { VpnSyncWorker(get(), get(), get(), get()) }
 }

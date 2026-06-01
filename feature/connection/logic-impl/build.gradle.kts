@@ -16,7 +16,10 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            implementation(projects.core.coroutines)
             implementation(projects.core.datastore)
+            implementation(projects.core.firebase)
+            implementation(projects.core.vpn.api)
             implementation(projects.core.xray)
             implementation(projects.feature.connection.logicApi)
             implementation(libs.androidx.datastore.preferences.core)

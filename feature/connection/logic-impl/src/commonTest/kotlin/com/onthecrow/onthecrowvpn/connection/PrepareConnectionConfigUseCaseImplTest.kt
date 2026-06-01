@@ -9,62 +9,47 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
-import kotlin.test.assertTrue
 
-internal class ValidateConnectionConfigUseCaseImplTest {
+internal class PrepareConnectionConfigUseCaseImplTest {
     @Test
-    fun acceptedPayloadIsValidatedAndSaved() = runTest {
+    fun acceptedPayloadReturnsXrayJson() = runTest {
         val xrayEngine = FakeXrayEngine(
             XrayValidationResult.Valid(
                 xrayJson = SAMPLE_XRAY_JSON,
                 summary = sampleSummary(),
             )
         )
-        val savedConfigs = mutableListOf<String>()
-        val useCase = ValidateConnectionConfigUseCaseImpl(
-            xrayEngine = xrayEngine,
-            saveConnectionConfigUseCase = { savedConfigs += it },
-        )
+        val useCase = PrepareConnectionConfigUseCaseImpl(xrayEngine)
 
         val result = useCase("  vless://sample  ")
 
         val valid = assertIs<ConfigValidationResult.Valid>(result)
-        assertEquals("vless://sample", valid.config.rawConfig)
-        assertEquals(SAMPLE_XRAY_JSON, valid.config.xrayJson)
+        assertEquals(SAMPLE_XRAY_JSON, valid.xrayJson)
         assertEquals(listOf("vless://sample"), xrayEngine.validatedInputs)
-        assertEquals(listOf("vless://sample"), savedConfigs)
     }
 
     @Test
-    fun invalidPayloadDoesNotOverwriteSavedConfig() = runTest {
+    fun invalidPayloadSurfacesMessage() = runTest {
         val xrayEngine = FakeXrayEngine(XrayValidationResult.Invalid("Xray rejected configuration"))
-        val savedConfigs = mutableListOf<String>()
-        val useCase = ValidateConnectionConfigUseCaseImpl(
-            xrayEngine = xrayEngine,
-            saveConnectionConfigUseCase = { savedConfigs += it },
-        )
+        val useCase = PrepareConnectionConfigUseCaseImpl(xrayEngine)
 
         val result = useCase("broken")
 
         val invalid = assertIs<ConfigValidationResult.Invalid>(result)
         assertEquals("Xray rejected configuration", invalid.message)
         assertEquals(listOf("broken"), xrayEngine.validatedInputs)
-        assertTrue(savedConfigs.isEmpty())
     }
 
     @Test
-    fun emptyPayloadIsRejectedBeforeXray() = runTest {
+    fun blankPayloadIsRejectedBeforeXray() = runTest {
         val xrayEngine = FakeXrayEngine(XrayValidationResult.Invalid("unused"))
-        val useCase = ValidateConnectionConfigUseCaseImpl(
-            xrayEngine = xrayEngine,
-            saveConnectionConfigUseCase = {},
-        )
+        val useCase = PrepareConnectionConfigUseCaseImpl(xrayEngine)
 
         val result = useCase("   ")
 
         val invalid = assertIs<ConfigValidationResult.Invalid>(result)
         assertEquals("Configuration is empty", invalid.message)
-        assertTrue(xrayEngine.validatedInputs.isEmpty())
+        assertEquals(emptyList(), xrayEngine.validatedInputs)
     }
 
     private class FakeXrayEngine(
