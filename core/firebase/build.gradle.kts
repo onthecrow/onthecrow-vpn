@@ -29,6 +29,7 @@ kotlin {
         val firebaseGroups = listOf(
             "FirebaseAnalytics",
             "FirebaseCrashlytics",
+            "FirebaseFirestore",
         )
 
         fun getFrameworks(): List<Pair<String, String>> {
@@ -95,6 +96,7 @@ kotlin {
             implementation(project.dependencies.platform(libs.firebase.bom))
             implementation(libs.firebase.analytics)
             implementation(libs.firebase.crashlytics)
+            implementation(libs.firebase.firestore)
         }
     }
 }

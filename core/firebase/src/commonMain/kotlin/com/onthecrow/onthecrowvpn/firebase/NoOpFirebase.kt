@@ -26,3 +26,7 @@ internal object NoOpCrashReporter : CrashReporter {
         value: String,
     ) = Unit
 }
+
+internal object NoOpFirestoreClient : FirestoreClient {
+    override val isAvailable: Boolean = false
+}

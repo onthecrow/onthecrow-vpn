@@ -23,6 +23,15 @@
 		FB000000000000000000010E /* FirebaseSessions.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001E /* FirebaseSessions.xcframework */; };
 		FB000000000000000000010F /* GoogleDataTransport.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001F /* GoogleDataTransport.xcframework */; };
 		FB0000000000000000000110 /* Promises.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000020 /* Promises.xcframework */; };
+		FB0000000000000000000111 /* FirebaseAppCheckInterop.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000021 /* FirebaseAppCheckInterop.xcframework */; };
+		FB0000000000000000000112 /* FirebaseFirestore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000022 /* FirebaseFirestore.xcframework */; };
+		FB0000000000000000000113 /* FirebaseFirestoreInternal.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000023 /* FirebaseFirestoreInternal.xcframework */; };
+		FB0000000000000000000114 /* FirebaseSharedSwift.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000024 /* FirebaseSharedSwift.xcframework */; };
+		FB0000000000000000000115 /* absl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000025 /* absl.xcframework */; };
+		FB0000000000000000000116 /* grpc.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000026 /* grpc.xcframework */; };
+		FB0000000000000000000117 /* grpcpp.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000027 /* grpcpp.xcframework */; };
+		FB0000000000000000000118 /* leveldb.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000028 /* leveldb.xcframework */; };
+		FB0000000000000000000119 /* openssl_grpc.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000029 /* openssl_grpc.xcframework */; };
 		FB0000000000000000000201 /* FBLPromises.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000011 /* FBLPromises.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FB0000000000000000000202 /* FirebaseAnalytics.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000012 /* FirebaseAnalytics.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FB0000000000000000000203 /* FirebaseCore.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000013 /* FirebaseCore.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -39,6 +48,15 @@
 		FB000000000000000000020E /* FirebaseSessions.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001E /* FirebaseSessions.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FB000000000000000000020F /* GoogleDataTransport.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001F /* GoogleDataTransport.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FB0000000000000000000210 /* Promises.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000020 /* Promises.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000211 /* FirebaseAppCheckInterop.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000021 /* FirebaseAppCheckInterop.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000212 /* FirebaseFirestore.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000022 /* FirebaseFirestore.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000213 /* FirebaseFirestoreInternal.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000023 /* FirebaseFirestoreInternal.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000214 /* FirebaseSharedSwift.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000024 /* FirebaseSharedSwift.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000215 /* absl.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000025 /* absl.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000216 /* grpc.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000026 /* grpc.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000217 /* grpcpp.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000027 /* grpcpp.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000218 /* leveldb.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000028 /* leveldb.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000219 /* openssl_grpc.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000029 /* openssl_grpc.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -64,6 +82,15 @@
 				FB000000000000000000020E /* FirebaseSessions.xcframework in Embed Frameworks */,
 				FB000000000000000000020F /* GoogleDataTransport.xcframework in Embed Frameworks */,
 				FB0000000000000000000210 /* Promises.xcframework in Embed Frameworks */,
+				FB0000000000000000000211 /* FirebaseAppCheckInterop.xcframework in Embed Frameworks */,
+				FB0000000000000000000212 /* FirebaseFirestore.xcframework in Embed Frameworks */,
+				FB0000000000000000000213 /* FirebaseFirestoreInternal.xcframework in Embed Frameworks */,
+				FB0000000000000000000214 /* FirebaseSharedSwift.xcframework in Embed Frameworks */,
+				FB0000000000000000000215 /* absl.xcframework in Embed Frameworks */,
+				FB0000000000000000000216 /* grpc.xcframework in Embed Frameworks */,
+				FB0000000000000000000217 /* grpcpp.xcframework in Embed Frameworks */,
+				FB0000000000000000000218 /* leveldb.xcframework in Embed Frameworks */,
+				FB0000000000000000000219 /* openssl_grpc.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -88,6 +115,15 @@
 		FB000000000000000000001E /* FirebaseSessions.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseSessions.xcframework; path = ../libs/FirebaseCrashlytics/FirebaseSessions.xcframework; sourceTree = SOURCE_ROOT; };
 		FB000000000000000000001F /* GoogleDataTransport.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GoogleDataTransport.xcframework; path = ../libs/FirebaseCrashlytics/GoogleDataTransport.xcframework; sourceTree = SOURCE_ROOT; };
 		FB0000000000000000000020 /* Promises.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Promises.xcframework; path = ../libs/FirebaseCrashlytics/Promises.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000021 /* FirebaseAppCheckInterop.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseAppCheckInterop.xcframework; path = ../libs/FirebaseFirestore/FirebaseAppCheckInterop.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000022 /* FirebaseFirestore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseFirestore.xcframework; path = ../libs/FirebaseFirestore/FirebaseFirestore.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000023 /* FirebaseFirestoreInternal.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseFirestoreInternal.xcframework; path = ../libs/FirebaseFirestore/FirebaseFirestoreInternal.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000024 /* FirebaseSharedSwift.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseSharedSwift.xcframework; path = ../libs/FirebaseFirestore/FirebaseSharedSwift.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000025 /* absl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = absl.xcframework; path = ../libs/FirebaseFirestore/absl.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000026 /* grpc.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = grpc.xcframework; path = ../libs/FirebaseFirestore/grpc.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000027 /* grpcpp.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = grpcpp.xcframework; path = ../libs/FirebaseFirestore/grpcpp.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000028 /* leveldb.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = leveldb.xcframework; path = ../libs/FirebaseFirestore/leveldb.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000029 /* openssl_grpc.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = openssl_grpc.xcframework; path = ../libs/FirebaseFirestore/openssl_grpc.xcframework; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -137,6 +173,15 @@
 				FB000000000000000000010E /* FirebaseSessions.xcframework in Frameworks */,
 				FB000000000000000000010F /* GoogleDataTransport.xcframework in Frameworks */,
 				FB0000000000000000000110 /* Promises.xcframework in Frameworks */,
+				FB0000000000000000000111 /* FirebaseAppCheckInterop.xcframework in Frameworks */,
+				FB0000000000000000000112 /* FirebaseFirestore.xcframework in Frameworks */,
+				FB0000000000000000000113 /* FirebaseFirestoreInternal.xcframework in Frameworks */,
+				FB0000000000000000000114 /* FirebaseSharedSwift.xcframework in Frameworks */,
+				FB0000000000000000000115 /* absl.xcframework in Frameworks */,
+				FB0000000000000000000116 /* grpc.xcframework in Frameworks */,
+				FB0000000000000000000117 /* grpcpp.xcframework in Frameworks */,
+				FB0000000000000000000118 /* leveldb.xcframework in Frameworks */,
+				FB0000000000000000000119 /* openssl_grpc.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -180,6 +225,15 @@
 				FB000000000000000000001E /* FirebaseSessions.xcframework */,
 				FB000000000000000000001F /* GoogleDataTransport.xcframework */,
 				FB0000000000000000000020 /* Promises.xcframework */,
+				FB0000000000000000000021 /* FirebaseAppCheckInterop.xcframework */,
+				FB0000000000000000000022 /* FirebaseFirestore.xcframework */,
+				FB0000000000000000000023 /* FirebaseFirestoreInternal.xcframework */,
+				FB0000000000000000000024 /* FirebaseSharedSwift.xcframework */,
+				FB0000000000000000000025 /* absl.xcframework */,
+				FB0000000000000000000026 /* grpc.xcframework */,
+				FB0000000000000000000027 /* grpcpp.xcframework */,
+				FB0000000000000000000028 /* leveldb.xcframework */,
+				FB0000000000000000000029 /* openssl_grpc.xcframework */,
 			);
 			name = Firebase;
 			sourceTree = "<group>";
