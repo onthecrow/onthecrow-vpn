@@ -12,12 +12,21 @@ kotlin {
     }
 }
 dependencies {
-    implementation(projects.shared)
+    implementation(projects.composeApp)
+    implementation(projects.core.vpn.impl)
 
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.core.ktx)
+    implementation(project.dependencies.platform(libs.koin.bom))
+    implementation(libs.koin.android)
 
     implementation(libs.compose.uiToolingPreview)
     debugImplementation(libs.compose.uiTooling)
+
+    val libXrayAar = rootProject.file("local-libs/libxray/LibXray.aar")
+    if (libXrayAar.exists()) {
+        implementation(files(libXrayAar))
+    }
 }
 
 android {

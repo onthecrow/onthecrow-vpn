@@ -1,27 +1,36 @@
-This is a Kotlin Multiplatform project targeting Android, iOS, Desktop (JVM).
+# OnthecrowVPN
 
-* [/iosApp](./iosApp/iosApp) contains an iOS application. Even if you’re sharing your UI with Compose Multiplatform,
-  you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.
+Kotlin Multiplatform / Compose Multiplatform VPN proof of concept.
 
-* [/shared](./shared/src) is for code that will be shared across your Compose Multiplatform applications.
-  It contains several subfolders:
-  - [commonMain](./shared/src/commonMain/kotlin) is for code that’s common for all targets.
-  - Other folders are for Kotlin code that will be compiled for only the platform indicated in the folder name.
-    For example, if you want to use Apple’s CoreCrypto for the iOS part of your Kotlin app,
-    the [iosMain](./shared/src/iosMain/kotlin) folder would be the right place for such calls.
-    Similarly, if you want to edit the Desktop (JVM) specific part, the [jvmMain](./shared/src/jvmMain/kotlin)
-    folder is the appropriate location.
+The first real VPN implementation is Android-only. iOS and Desktop share the same UI and persistence layer, validate/apply configs, and keep compile-safe no-op VPN controllers that report `VPN is not implemented on this platform yet`.
 
-### Running the apps
+## Architecture
 
-Use the run configurations provided by the run widget in your IDE's toolbar. You can also use these commands and options:
+- `composeApp`: shared Compose app entrypoint, Koin initialization, Navigation3 host.
+- `androidApp`, `iosApp`, `desktopApp`: thin platform launchers.
+- `core:*`: coroutines, datastore, navigation, UI theme, Xray bridge, VPN API/impl.
+- `feature:connection:*`: config validation/persistence use cases and the connection UI.
 
-- Android app: `./gradlew :androidApp:assembleDebug`
-- Desktop app:
-  - Hot reload: `./gradlew :desktopApp:hotRun --auto`
-  - Standard run: `./gradlew :desktopApp:run`
-- iOS app: open the [/iosApp](./iosApp) directory in Xcode and run it from there.
+Config validity is intentionally delegated to Xray/libXray. The app trims and checks for empty input, then calls `ConvertShareLinksToXrayJson` and `TestXray`; successful raw config is stored in app-private DataStore and revalidated on the next launch.
 
----
+## libXray for Android
 
-Learn more about [Kotlin Multiplatform](https://www.jetbrains.com/help/kotlin-multiplatform-dev/get-started.html)…
+The repository does not commit a built AAR. Build it locally when you want real Android validation/connect behavior:
+
+```bash
+scripts/build-libxray-android.sh
+```
+
+The script pins `LIBXRAY_TAG` by default and copies the resulting artifact to `local-libs/libxray/LibXray.aar`, which Gradle picks up automatically. Requirements are the Android SDK/NDK, Go, gomobile, Python 3, and the toolchain required by the pinned `XTLS/libXray` build.
+
+Without the AAR, Android still compiles, but validation returns a clear `libXray is not installed` error.
+
+## Useful Commands
+
+```bash
+./gradlew :feature:connection:logic-impl:jvmTest :feature:connection:ui-impl:jvmTest
+./gradlew :androidApp:compileDebugKotlin :composeApp:compileKotlinIosSimulatorArm64 :desktopApp:compileKotlin
+./gradlew :desktopApp:run
+```
+
+For iOS, build the `iosApp` scheme from Xcode or run `xcodebuild` against an available iOS simulator.
