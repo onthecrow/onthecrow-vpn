@@ -40,6 +40,7 @@ kotlin {
         commonMain.dependencies {
             implementation(projects.core.coroutines)
             implementation(projects.core.datastore)
+            api(projects.core.firebase)
             implementation(projects.core.navigation.api)
             implementation(projects.core.navigation.impl)
             implementation(projects.core.ui)

@@ -6,8 +6,88 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		FB0000000000000000000101 /* FBLPromises.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000011 /* FBLPromises.xcframework */; };
+		FB0000000000000000000102 /* FirebaseAnalytics.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000012 /* FirebaseAnalytics.xcframework */; };
+		FB0000000000000000000103 /* FirebaseCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000013 /* FirebaseCore.xcframework */; };
+		FB0000000000000000000104 /* FirebaseCoreInternal.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000014 /* FirebaseCoreInternal.xcframework */; };
+		FB0000000000000000000105 /* FirebaseInstallations.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000015 /* FirebaseInstallations.xcframework */; };
+		FB0000000000000000000106 /* GoogleAdsOnDeviceConversion.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000016 /* GoogleAdsOnDeviceConversion.xcframework */; };
+		FB0000000000000000000107 /* GoogleAppMeasurement.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000017 /* GoogleAppMeasurement.xcframework */; };
+		FB0000000000000000000108 /* GoogleAppMeasurementIdentitySupport.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000018 /* GoogleAppMeasurementIdentitySupport.xcframework */; };
+		FB0000000000000000000109 /* GoogleUtilities.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000019 /* GoogleUtilities.xcframework */; };
+		FB000000000000000000010A /* nanopb.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001A /* nanopb.xcframework */; };
+		FB000000000000000000010B /* FirebaseCoreExtension.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001B /* FirebaseCoreExtension.xcframework */; };
+		FB000000000000000000010C /* FirebaseCrashlytics.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001C /* FirebaseCrashlytics.xcframework */; };
+		FB000000000000000000010D /* FirebaseRemoteConfigInterop.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001D /* FirebaseRemoteConfigInterop.xcframework */; };
+		FB000000000000000000010E /* FirebaseSessions.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001E /* FirebaseSessions.xcframework */; };
+		FB000000000000000000010F /* GoogleDataTransport.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001F /* GoogleDataTransport.xcframework */; };
+		FB0000000000000000000110 /* Promises.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000020 /* Promises.xcframework */; };
+		FB0000000000000000000201 /* FBLPromises.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000011 /* FBLPromises.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000202 /* FirebaseAnalytics.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000012 /* FirebaseAnalytics.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000203 /* FirebaseCore.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000013 /* FirebaseCore.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000204 /* FirebaseCoreInternal.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000014 /* FirebaseCoreInternal.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000205 /* FirebaseInstallations.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000015 /* FirebaseInstallations.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000206 /* GoogleAdsOnDeviceConversion.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000016 /* GoogleAdsOnDeviceConversion.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000207 /* GoogleAppMeasurement.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000017 /* GoogleAppMeasurement.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000208 /* GoogleAppMeasurementIdentitySupport.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000018 /* GoogleAppMeasurementIdentitySupport.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000209 /* GoogleUtilities.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000019 /* GoogleUtilities.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB000000000000000000020A /* nanopb.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001A /* nanopb.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB000000000000000000020B /* FirebaseCoreExtension.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001B /* FirebaseCoreExtension.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB000000000000000000020C /* FirebaseCrashlytics.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001C /* FirebaseCrashlytics.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB000000000000000000020D /* FirebaseRemoteConfigInterop.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001D /* FirebaseRemoteConfigInterop.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB000000000000000000020E /* FirebaseSessions.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001E /* FirebaseSessions.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB000000000000000000020F /* GoogleDataTransport.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001F /* GoogleDataTransport.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FB0000000000000000000210 /* Promises.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000020 /* Promises.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		FB0000000000000000000002 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				FB0000000000000000000201 /* FBLPromises.xcframework in Embed Frameworks */,
+				FB0000000000000000000202 /* FirebaseAnalytics.xcframework in Embed Frameworks */,
+				FB0000000000000000000203 /* FirebaseCore.xcframework in Embed Frameworks */,
+				FB0000000000000000000204 /* FirebaseCoreInternal.xcframework in Embed Frameworks */,
+				FB0000000000000000000205 /* FirebaseInstallations.xcframework in Embed Frameworks */,
+				FB0000000000000000000206 /* GoogleAdsOnDeviceConversion.xcframework in Embed Frameworks */,
+				FB0000000000000000000207 /* GoogleAppMeasurement.xcframework in Embed Frameworks */,
+				FB0000000000000000000208 /* GoogleAppMeasurementIdentitySupport.xcframework in Embed Frameworks */,
+				FB0000000000000000000209 /* GoogleUtilities.xcframework in Embed Frameworks */,
+				FB000000000000000000020A /* nanopb.xcframework in Embed Frameworks */,
+				FB000000000000000000020B /* FirebaseCoreExtension.xcframework in Embed Frameworks */,
+				FB000000000000000000020C /* FirebaseCrashlytics.xcframework in Embed Frameworks */,
+				FB000000000000000000020D /* FirebaseRemoteConfigInterop.xcframework in Embed Frameworks */,
+				FB000000000000000000020E /* FirebaseSessions.xcframework in Embed Frameworks */,
+				FB000000000000000000020F /* GoogleDataTransport.xcframework in Embed Frameworks */,
+				FB0000000000000000000210 /* Promises.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		68DAB6C0C1FA5A7AB161FDE2 /* OnthecrowVPN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OnthecrowVPN.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FB0000000000000000000011 /* FBLPromises.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FBLPromises.xcframework; path = ../libs/FirebaseAnalytics/FBLPromises.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000012 /* FirebaseAnalytics.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseAnalytics.xcframework; path = ../libs/FirebaseAnalytics/FirebaseAnalytics.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000013 /* FirebaseCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseCore.xcframework; path = ../libs/FirebaseAnalytics/FirebaseCore.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000014 /* FirebaseCoreInternal.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseCoreInternal.xcframework; path = ../libs/FirebaseAnalytics/FirebaseCoreInternal.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000015 /* FirebaseInstallations.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseInstallations.xcframework; path = ../libs/FirebaseAnalytics/FirebaseInstallations.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000016 /* GoogleAdsOnDeviceConversion.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GoogleAdsOnDeviceConversion.xcframework; path = ../libs/FirebaseAnalytics/GoogleAdsOnDeviceConversion.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000017 /* GoogleAppMeasurement.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GoogleAppMeasurement.xcframework; path = ../libs/FirebaseAnalytics/GoogleAppMeasurement.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000018 /* GoogleAppMeasurementIdentitySupport.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GoogleAppMeasurementIdentitySupport.xcframework; path = ../libs/FirebaseAnalytics/GoogleAppMeasurementIdentitySupport.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000019 /* GoogleUtilities.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GoogleUtilities.xcframework; path = ../libs/FirebaseAnalytics/GoogleUtilities.xcframework; sourceTree = SOURCE_ROOT; };
+		FB000000000000000000001A /* nanopb.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = nanopb.xcframework; path = ../libs/FirebaseAnalytics/nanopb.xcframework; sourceTree = SOURCE_ROOT; };
+		FB000000000000000000001B /* FirebaseCoreExtension.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseCoreExtension.xcframework; path = ../libs/FirebaseCrashlytics/FirebaseCoreExtension.xcframework; sourceTree = SOURCE_ROOT; };
+		FB000000000000000000001C /* FirebaseCrashlytics.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseCrashlytics.xcframework; path = ../libs/FirebaseCrashlytics/FirebaseCrashlytics.xcframework; sourceTree = SOURCE_ROOT; };
+		FB000000000000000000001D /* FirebaseRemoteConfigInterop.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseRemoteConfigInterop.xcframework; path = ../libs/FirebaseCrashlytics/FirebaseRemoteConfigInterop.xcframework; sourceTree = SOURCE_ROOT; };
+		FB000000000000000000001E /* FirebaseSessions.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseSessions.xcframework; path = ../libs/FirebaseCrashlytics/FirebaseSessions.xcframework; sourceTree = SOURCE_ROOT; };
+		FB000000000000000000001F /* GoogleDataTransport.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = GoogleDataTransport.xcframework; path = ../libs/FirebaseCrashlytics/GoogleDataTransport.xcframework; sourceTree = SOURCE_ROOT; };
+		FB0000000000000000000020 /* Promises.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Promises.xcframework; path = ../libs/FirebaseCrashlytics/Promises.xcframework; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -41,6 +121,22 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FB0000000000000000000101 /* FBLPromises.xcframework in Frameworks */,
+				FB0000000000000000000102 /* FirebaseAnalytics.xcframework in Frameworks */,
+				FB0000000000000000000103 /* FirebaseCore.xcframework in Frameworks */,
+				FB0000000000000000000104 /* FirebaseCoreInternal.xcframework in Frameworks */,
+				FB0000000000000000000105 /* FirebaseInstallations.xcframework in Frameworks */,
+				FB0000000000000000000106 /* GoogleAdsOnDeviceConversion.xcframework in Frameworks */,
+				FB0000000000000000000107 /* GoogleAppMeasurement.xcframework in Frameworks */,
+				FB0000000000000000000108 /* GoogleAppMeasurementIdentitySupport.xcframework in Frameworks */,
+				FB0000000000000000000109 /* GoogleUtilities.xcframework in Frameworks */,
+				FB000000000000000000010A /* nanopb.xcframework in Frameworks */,
+				FB000000000000000000010B /* FirebaseCoreExtension.xcframework in Frameworks */,
+				FB000000000000000000010C /* FirebaseCrashlytics.xcframework in Frameworks */,
+				FB000000000000000000010D /* FirebaseRemoteConfigInterop.xcframework in Frameworks */,
+				FB000000000000000000010E /* FirebaseSessions.xcframework in Frameworks */,
+				FB000000000000000000010F /* GoogleDataTransport.xcframework in Frameworks */,
+				FB0000000000000000000110 /* Promises.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -52,6 +148,7 @@
 			children = (
 				C351BE788214FCAB53AD7415 /* Configuration */,
 				9C39F4F4C20CCA3E09E9CAE6 /* iosApp */,
+				FB0000000000000000000001 /* Firebase */,
 				02F940A3DC63A91D0CEF2792 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -64,6 +161,29 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		FB0000000000000000000001 /* Firebase */ = {
+			isa = PBXGroup;
+			children = (
+				FB0000000000000000000011 /* FBLPromises.xcframework */,
+				FB0000000000000000000012 /* FirebaseAnalytics.xcframework */,
+				FB0000000000000000000013 /* FirebaseCore.xcframework */,
+				FB0000000000000000000014 /* FirebaseCoreInternal.xcframework */,
+				FB0000000000000000000015 /* FirebaseInstallations.xcframework */,
+				FB0000000000000000000016 /* GoogleAdsOnDeviceConversion.xcframework */,
+				FB0000000000000000000017 /* GoogleAppMeasurement.xcframework */,
+				FB0000000000000000000018 /* GoogleAppMeasurementIdentitySupport.xcframework */,
+				FB0000000000000000000019 /* GoogleUtilities.xcframework */,
+				FB000000000000000000001A /* nanopb.xcframework */,
+				FB000000000000000000001B /* FirebaseCoreExtension.xcframework */,
+				FB000000000000000000001C /* FirebaseCrashlytics.xcframework */,
+				FB000000000000000000001D /* FirebaseRemoteConfigInterop.xcframework */,
+				FB000000000000000000001E /* FirebaseSessions.xcframework */,
+				FB000000000000000000001F /* GoogleDataTransport.xcframework */,
+				FB0000000000000000000020 /* Promises.xcframework */,
+			);
+			name = Firebase;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -72,8 +192,10 @@
 			buildConfigurationList = 6D2DD2E0641644ACE5AE2E16 /* Build configuration list for PBXNativeTarget "iosApp" */;
 			buildPhases = (
 				13A9974A58782A00C296E183 /* Compile Kotlin Framework */,
+				FB0000000000000000000003 /* Copy Firebase Config */,
 				CBEC4B7B84722D9041489F73 /* Sources */,
 				ECC7C8F0AD872CE76DEEA35C /* Frameworks */,
+				FB0000000000000000000002 /* Embed Frameworks */,
 				3C48B559043B2C63DA99CDB1 /* Resources */,
 			);
 			buildRules = (
@@ -135,6 +257,24 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		FB0000000000000000000003 /* Copy Firebase Config */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Firebase Config";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "CONFIG_FILE=\"$SRCROOT/Configuration/GoogleService-Info-${CONFIGURATION}.plist\"\nDESTINATION=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GoogleService-Info.plist\"\n\nif [ -f \"$CONFIG_FILE\" ]; then\n  cp \"$CONFIG_FILE\" \"$DESTINATION\"\n  plutil -replace BUNDLE_ID -string \"$PRODUCT_BUNDLE_IDENTIFIER\" \"$DESTINATION\" || true\nelse\n  echo \"warning: Firebase config missing at $CONFIG_FILE. Firebase will be disabled for this build.\"\nfi\n";
+		};
 		13A9974A58782A00C296E183 /* Compile Kotlin Framework */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -226,6 +366,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = "\"$(OTHER_LDFLAGS) -ObjC\"";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -284,6 +425,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = "\"$(OTHER_LDFLAGS) -ObjC\"";
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
@@ -312,6 +454,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"-ObjC",
+					"-lc++",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowVPN.dev;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -340,6 +487,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"-ObjC",
+					"-lc++",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowVPN;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";

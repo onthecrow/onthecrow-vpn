@@ -5,6 +5,7 @@ import com.onthecrow.onthecrowvpn.connection.di.connectionLogicModule
 import com.onthecrow.onthecrowvpn.connection.di.connectionModule
 import com.onthecrow.onthecrowvpn.coroutines.di.coroutinesModule
 import com.onthecrow.onthecrowvpn.datastore.di.datastoreModule
+import com.onthecrow.onthecrowvpn.firebase.di.firebaseModule
 import com.onthecrow.onthecrowvpn.navigation.Destination
 import com.onthecrow.onthecrowvpn.navigation.di.StartDestination
 import com.onthecrow.onthecrowvpn.navigation.di.navigationModule
@@ -20,6 +21,7 @@ val applicationModule = module {
     includes(
         coroutinesModule,
         datastoreModule,
+        firebaseModule,
         navigationModule,
         xrayModule,
         vpnModule,

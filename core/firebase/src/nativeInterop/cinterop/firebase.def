@@ -1,0 +1,7 @@
+language = Objective-C
+headers = FirebaseCore/FirebaseCore-umbrella.h \
+          FirebaseAnalytics/FirebaseAnalytics.h \
+          FirebaseCrashlytics/FirebaseCrashlytics.h
+package = platform.Firebase
+noStringConversion = char16_t
+depends = platform.posix
