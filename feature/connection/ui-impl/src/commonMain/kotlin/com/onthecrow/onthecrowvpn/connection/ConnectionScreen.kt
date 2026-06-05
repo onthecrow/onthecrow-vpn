@@ -338,9 +338,11 @@ private fun ConnectButton(
                 Spacer(Modifier.height(8.dp))
             }
             Text(
-                text = when {
-                    connected -> "Connected"
-                    state.isBusy -> "Connecting"
+                text = when (state.connectionStatus) {
+                    is ConnectionStatus.Connected -> "Disconnect"
+                    is ConnectionStatus.Disconnecting -> "Disconnecting"
+                    is ConnectionStatus.Connecting,
+                    is ConnectionStatus.PreparingPermission -> "Connecting"
                     else -> "Connect"
                 },
                 style = MaterialTheme.typography.labelLarge,

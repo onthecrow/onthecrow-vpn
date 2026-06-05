@@ -29,6 +29,21 @@ actual class PlatformVpnController : VpnController {
         val output: StringBuilder,
     )
 
+    init {
+        // Reconcile at launch with the real system state. The elevated helper from a previous
+        // run may still be alive (its root process can outlive the app) and watching the stop
+        // sentinel. Signal it to tear down so the app and the OS agree on a clean Disconnected
+        // state instead of leaving an invisible, unmanageable tunnel up.
+        runCatching {
+            val workDir = File(System.getProperty("java.io.tmpdir"), "onthecrowvpn-vpn")
+            val ready = File(workDir, "ready")
+            val stop = File(workDir, "stop")
+            if (ready.exists() && !stop.exists()) {
+                stop.writeText("stop")
+            }
+        }
+    }
+
     override suspend fun connect(xrayJson: String): ConnectResult = mutex.withLock {
         if (DesktopVpnSupport.os == DesktopOs.UNSUPPORTED) {
             return@withLock failNow("VPN is not supported on this OS yet")

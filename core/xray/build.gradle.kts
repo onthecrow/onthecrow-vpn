@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidMultiplatformLibrary)
@@ -10,8 +12,40 @@ kotlin {
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
     }
-    iosArm64()
-    iosSimulatorArm64()
+
+    listOf(
+        iosArm64(),
+        iosSimulatorArm64(),
+    ).forEach { iosTarget ->
+        val archSlice = when (iosTarget.name) {
+            "iosArm64" -> "ios-arm64"
+            "iosSimulatorArm64" -> "ios-arm64_x86_64-simulator"
+            else -> throw GradleException("Unknown iOS target: ${iosTarget.name}")
+        }
+        val sliceDir = rootProject.file("libs/LibXray/LibXray.xcframework/$archSlice")
+
+        iosTarget.compilations.getByName("main") {
+            @Suppress("unused")
+            val libxray by cinterops.creating {
+                defFile(project.file("src/nativeInterop/cinterop/libxray.def"))
+                extraOpts("-compiler-option", "-fmodules")
+                if (sliceDir.exists()) extraOpts("-compiler-option", "-F${sliceDir.absolutePath}")
+            }
+        }
+
+        iosTarget.binaries.all {
+            if (sliceDir.exists()) {
+                linkerOpts("-F${sliceDir.absolutePath}", "-framework", "LibXray")
+            }
+            linkerOpts(
+                "-framework", "Foundation",
+                "-framework", "Security",
+                "-framework", "SystemConfiguration",
+                "-lresolv",
+            )
+        }
+    }
+
     jvm()
 
     sourceSets {

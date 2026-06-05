@@ -23,3 +23,4 @@ local-libs/
 **/GoogleService-Info*.plist
 **/firebase-admin.properties
 desktopApp/resources/
+libs/LibXray/

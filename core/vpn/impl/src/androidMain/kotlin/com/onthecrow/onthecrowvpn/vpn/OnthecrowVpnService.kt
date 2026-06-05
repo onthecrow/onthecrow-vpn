@@ -48,6 +48,13 @@ class OnthecrowVpnService : VpnService() {
         return Service.START_STICKY
     }
 
+    // Called by the system when the VPN is torn down externally (user revokes it from system
+    // settings/Quick Settings, or another app's VPN takes over). The system is the source of
+    // truth, so we mirror that here instead of leaving a stale "Connected" status in the UI.
+    override fun onRevoke() {
+        scope.launch { runDisconnect(stopService = true) }
+    }
+
     override fun onDestroy() {
         runBlocking { operationMutex.withLock { stopTunnel() } }
         scope.cancel()
