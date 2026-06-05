@@ -352,13 +352,11 @@ private fun ConnectButton(
 
 private fun subtitleFor(config: RemoteConfig): String {
     val scheme = config.url.substringBefore("://", missingDelimiterValue = "")
-    val location = config.location?.uppercase()
-    return when {
-        !location.isNullOrBlank() && scheme.isNotBlank() -> "$location · $scheme"
-        !location.isNullOrBlank() -> location
-        scheme.isNotBlank() -> scheme
-        else -> ""
-    }
+    return listOfNotNull(
+        config.location?.takeIf { it.isNotBlank() }?.uppercase(),
+        scheme.takeIf { it.isNotBlank() },
+        config.type?.takeIf { it.isNotBlank() },
+    ).joinToString(" · ")
 }
 
 private fun formatTimestamp(epochMillis: Long): String {

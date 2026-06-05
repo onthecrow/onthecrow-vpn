@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
     alias(libs.plugins.androidMultiplatformLibrary)
+    alias(libs.plugins.kotlinxSerialization)
 }
 
 kotlin {
@@ -99,6 +100,11 @@ kotlin {
             implementation(libs.firebase.analytics)
             implementation(libs.firebase.crashlytics)
             implementation(libs.firebase.firestore)
+        }
+        jvmMain.dependencies {
+            implementation(libs.firebase.kotlin.app)
+            implementation(libs.firebase.kotlin.firestore)
+            implementation(libs.kotlinx.serialization.json)
         }
     }
 }

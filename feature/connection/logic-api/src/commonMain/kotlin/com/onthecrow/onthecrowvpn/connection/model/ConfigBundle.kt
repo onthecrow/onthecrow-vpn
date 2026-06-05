@@ -17,4 +17,5 @@ data class RemoteConfig(
     val name: String,
     val location: String? = null,
     val url: String,
+    val type: String? = null,
 )

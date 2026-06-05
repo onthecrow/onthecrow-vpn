@@ -1,0 +1,12 @@
+# Copy this file to `firebase-admin.properties` (next to it) and fill in the values
+# from Firebase Console -> Project Settings -> General -> Your apps -> Web app config.
+# The real `firebase-admin.properties` is gitignored.
+#
+# The desktop client only reads /configs/{id} (which is publicly readable per Firestore
+# rules), so no admin sign-in is required — just the Web SDK config is enough.
+
+firebase.apiKey=AIzaSy...
+firebase.projectId=onthecrow-vpn
+firebase.applicationId=1:000000000000:web:0000000000000000000000
+firebase.storageBucket=onthecrow-vpn.firebasestorage.app
+firebase.gcmSenderId=000000000000

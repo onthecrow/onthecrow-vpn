@@ -15,7 +15,8 @@ internal fun decodeBundleOrNull(id: String, data: Map<String, Any?>?): ConfigBun
         val cName = (raw["name"] as? String) ?: return@mapNotNull null
         val cUrl = (raw["url"] as? String) ?: return@mapNotNull null
         val cLocation = raw["location"] as? String
-        RemoteConfig(id = cId, name = cName, location = cLocation, url = cUrl)
+        val cType = raw["type"] as? String
+        RemoteConfig(id = cId, name = cName, location = cLocation, url = cUrl, type = cType)
     }
     if (configs.isEmpty()) return null
     return ConfigBundle(

@@ -25,5 +25,8 @@ kotlin {
             implementation(project.dependencies.platform(libs.koin.bom))
             implementation(libs.koin.core)
         }
+        jvmMain.dependencies {
+            implementation(libs.kotlinx.serialization.json)
+        }
     }
 }
