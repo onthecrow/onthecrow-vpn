@@ -7,14 +7,18 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import platform.Foundation.NSBundle
 import platform.Foundation.NSError
-import platform.Foundation.NSNotification
-import platform.Foundation.NSNotificationCenter
-import platform.Foundation.NSOperationQueue
+import platform.Foundation.NSUserDefaults
 import platform.NetworkExtension.NETunnelProviderManager
 import platform.NetworkExtension.NETunnelProviderProtocol
 import platform.NetworkExtension.NEVPNConnection
@@ -23,16 +27,18 @@ import platform.NetworkExtension.NEVPNStatusConnected
 import platform.NetworkExtension.NEVPNStatusConnecting
 import platform.NetworkExtension.NEVPNStatusDisconnecting
 import platform.NetworkExtension.NEVPNStatusReasserting
-import platform.darwin.NSObjectProtocol
 import kotlin.coroutines.resume
 
 /**
  * iOS VPN controller. The single source of truth is the system: the NE packet-tunnel runs in a
- * separate process that outlives the app, so we never keep our own optimistic state as truth.
- * Instead we observe `NEVPNStatusDidChangeNotification` from construction and reconcile with any
- * profile already installed/connected (e.g. left running by a previous app launch). `connect` and
- * `disconnect` only *ask* the system to change; the resulting status always flows back via the
- * observer.
+ * separate process that outlives the app, so we never keep optimistic state as truth.
+ *
+ * Status is published by polling the live `NEVPNConnection.status` of the installed profile on the
+ * main run loop. We deliberately do NOT rely on `NEVPNStatusDidChangeNotification` — its block
+ * callback proved unreliable in this Kotlin/Native setup (it never fired during a session, so the
+ * UI only updated on the next user interaction). Polling reads the real OS status, so the button
+ * reflects connect/disconnect (including external changes from Settings) within one tick, and the
+ * launch `reconcile()` gives the correct state immediately on cold start.
  */
 @OptIn(ExperimentalForeignApi::class)
 actual class PlatformVpnController : VpnController {
@@ -40,22 +46,42 @@ actual class PlatformVpnController : VpnController {
     override val status: StateFlow<ConnectionStatus> = mutableStatus
 
     private val sanitizer = XrayConfigSanitizer()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var manager: NETunnelProviderManager? = null
 
-    @Suppress("unused")
-    private val statusObserver: NSObjectProtocol =
-        NSNotificationCenter.defaultCenter.addObserverForName(
-            // object = null: observe every VPN connection so we reflect the system even for a
-            // tunnel we did not start in this process lifetime.
-            name = "NEVPNStatusDidChangeNotification",
-            `object` = null,
-            queue = NSOperationQueue.mainQueue,
-        ) { _: NSNotification? ->
-            manager?.let { mutableStatus.value = mapStatus(it.connection.status) }
-        }
+    // True between asking the system to connect and reaching Connected. If the OS instead drops
+    // back to Disconnected while this is set, the tunnel failed — we then surface the reason the
+    // extension wrote to the shared App Group store (or a generic message).
+    private var pendingConnect = false
 
     init {
         reconcile()
+        scope.launch {
+            while (isActive) {
+                // StateFlow dedups, so this only emits when the OS status actually changes.
+                manager?.let { publish(mapStatus(it.connection.status)) }
+                delay(POLL_INTERVAL_MS)
+            }
+        }
+    }
+
+    /** Publish a polled status, turning a failed connection attempt into an informative Error. */
+    private fun publish(mapped: ConnectionStatus) {
+        when (mapped) {
+            ConnectionStatus.Connected -> {
+                pendingConnect = false
+                mutableStatus.value = mapped
+            }
+            ConnectionStatus.Disconnected -> {
+                if (pendingConnect) {
+                    pendingConnect = false
+                    mutableStatus.value = ConnectionStatus.Error(readSharedError() ?: GENERIC_FAILURE)
+                } else {
+                    mutableStatus.value = mapped
+                }
+            }
+            else -> mutableStatus.value = mapped
+        }
     }
 
     /** Adopt an existing system profile and publish its real status at launch. */
@@ -85,17 +111,22 @@ actual class PlatformVpnController : VpnController {
 
             saveAndReload(mgr)
             manager = mgr
+            clearSharedError()
+            pendingConnect = true
 
             val started = startTunnel(mgr.connection)
             if (started == null) {
-                // Status now driven by the observer (Connecting → Connected).
+                // Async outcome now driven by the poller: Connecting → Connected, or a drop back
+                // to Disconnected which publish() turns into an Error with the extension's reason.
                 ConnectResult.Started
             } else {
-                // Reflect the system's real status rather than a stale optimistic value.
+                // Synchronous failure — the caller surfaces this message itself.
+                pendingConnect = false
                 mutableStatus.value = mapStatus(mgr.connection.status)
                 ConnectResult.Failed(started)
             }
         } catch (t: Throwable) {
+            pendingConnect = false
             val message = t.message ?: "Failed to start VPN"
             mutableStatus.value = manager?.let { mapStatus(it.connection.status) }
                 ?: ConnectionStatus.Error(message)
@@ -104,9 +135,20 @@ actual class PlatformVpnController : VpnController {
     }
 
     override suspend fun disconnect() {
-        // Ask the system to stop; the observer publishes Disconnecting → Disconnected.
+        // User-initiated stop is not a failure.
+        pendingConnect = false
         manager?.connection?.stopVPNTunnel()
             ?: run { mutableStatus.value = ConnectionStatus.Disconnected }
+    }
+
+    private fun sharedDefaults(): NSUserDefaults? = NSUserDefaults(suiteName = APP_GROUP_ID)
+
+    /** Read the failure reason the extension wrote to the shared App Group store, if any. */
+    private fun readSharedError(): String? =
+        sharedDefaults()?.stringForKey(ERROR_KEY)?.takeIf { it.isNotBlank() }
+
+    private fun clearSharedError() {
+        sharedDefaults()?.removeObjectForKey(ERROR_KEY)
     }
 
     private suspend fun loadOrCreateManager(): NETunnelProviderManager =
@@ -155,7 +197,19 @@ actual class PlatformVpnController : VpnController {
         val q2 = xrayJson.indexOf('"', q1 + 1)
         if (q1 < 0 || q2 < 0) return null
         return xrayJson.substring(q1 + 1, q2).takeIf {
-            it.isNotBlank() && it != "127.0.0.1" && it != "0.0.0.0" && it != "::1"
+            it.isNotBlank() && it != "127.0.0.1" && it != "0.0.0.0" && it != "::1" &&
+                // Only a clean host/IP token — anything else (spaces, CIDRs, rule prefixes) is not a
+                // valid NETunnelNetworkSettings.tunnelRemoteAddress and would reject the tunnel.
+                it.all { c -> c.isLetterOrDigit() || c == '.' || c == ':' || c == '-' || c == '_' }
         }
+    }
+
+    private companion object {
+        private const val POLL_INTERVAL_MS = 500L
+        // Must match OnthecrowTunnelCore in the extension.
+        private const val APP_GROUP_ID = "group.com.onthecrow.onthecrowvpn"
+        private const val ERROR_KEY = "lastTunnelError"
+        private const val GENERIC_FAILURE =
+            "VPN failed to start — the server may be unreachable, the network is blocking it, or the configuration is unsupported."
     }
 }

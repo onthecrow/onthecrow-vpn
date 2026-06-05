@@ -6,14 +6,18 @@ import com.onthecrow.onthecrowvpn.connection.domain.LoadBundleUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.ObserveActiveBundleUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.uicore.BaseViewModel
 import com.onthecrow.onthecrowvpn.vpn.ConnectResult
+import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import com.onthecrow.onthecrowvpn.vpn.VpnController
 import com.onthecrow.onthecrowvpn.vpn.VpnPermissionRequester
 import com.onthecrow.onthecrowvpn.vpn.VpnPermissionResult
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 internal class ConnectionViewModel(
     observeActiveBundleUseCase: ObserveActiveBundleUseCase,
@@ -57,7 +61,20 @@ internal class ConnectionViewModel(
     }
 
     private fun handleConfigSelected(configId: String) {
-        viewModelScope.launch { selectConfigUseCase(configId) }
+        viewModelScope.launch {
+            selectConfigUseCase(configId)
+            // If a tunnel is currently up, switch it over to the newly chosen config:
+            // stop, wait for the system to settle to Disconnected, then reconnect on the new server.
+            val active = state.value.isConnected || state.value.isBusy
+            val newConfig = state.value.bundle?.configs?.firstOrNull { it.id == configId }
+            if (active && newConfig != null) {
+                vpnController.disconnect()
+                withTimeoutOrNull(DISCONNECT_TIMEOUT_MS) {
+                    vpnController.status.first { it is ConnectionStatus.Disconnected }
+                }
+                startConnection(newConfig)
+            }
+        }
     }
 
     private fun handleConnectClick() {
@@ -70,23 +87,30 @@ internal class ConnectionViewModel(
             onEvent(ConnectionEvent.OnSnackbarRequested("Select a configuration first"))
             return
         }
-        viewModelScope.launch {
-            when (val result = prepareConnectionConfigUseCase(cfg.url)) {
-                is ConfigValidationResult.Invalid -> {
-                    onEvent(ConnectionEvent.OnSnackbarRequested(result.message))
+        viewModelScope.launch { startConnection(cfg) }
+    }
+
+    /** Validate the config's share link, ensure VPN permission, then ask the controller to connect. */
+    private suspend fun startConnection(config: RemoteConfig) {
+        when (val result = prepareConnectionConfigUseCase(config.url)) {
+            is ConfigValidationResult.Invalid -> {
+                onEvent(ConnectionEvent.OnSnackbarRequested(result.message))
+            }
+            is ConfigValidationResult.Valid -> when (val perm = vpnPermissionRequester.requestPermission()) {
+                VpnPermissionResult.Granted -> when (val outcome = vpnController.connect(result.xrayJson)) {
+                    ConnectResult.Started -> Unit
+                    is ConnectResult.Failed -> onEvent(ConnectionEvent.OnSnackbarRequested(outcome.message))
                 }
-                is ConfigValidationResult.Valid -> when (val perm = vpnPermissionRequester.requestPermission()) {
-                    VpnPermissionResult.Granted -> when (val outcome = vpnController.connect(result.xrayJson)) {
-                        ConnectResult.Started -> Unit
-                        is ConnectResult.Failed -> onEvent(ConnectionEvent.OnSnackbarRequested(outcome.message))
-                    }
-                    is VpnPermissionResult.Denied -> onEvent(ConnectionEvent.OnSnackbarRequested(perm.message))
-                }
+                is VpnPermissionResult.Denied -> onEvent(ConnectionEvent.OnSnackbarRequested(perm.message))
             }
         }
     }
 
     private fun handleDisconnectClick() {
         viewModelScope.launch { vpnController.disconnect() }
+    }
+
+    private companion object {
+        private const val DISCONNECT_TIMEOUT_MS = 8_000L
     }
 }
