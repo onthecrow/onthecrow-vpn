@@ -4,10 +4,8 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
@@ -15,11 +13,9 @@ import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import androidx.core.content.ContextCompat
 import com.onthecrow.onthecrowvpn.xray.AndroidVpnSocketProtector
 import com.onthecrow.onthecrowvpn.xray.PlatformXrayEngine
 import com.onthecrow.onthecrowvpn.xray.XrayConfigSanitizer
@@ -53,12 +49,6 @@ class OnthecrowVpnService : VpnService() {
 
     @Volatile
     private var underlyingSeeded = false
-
-    // Screen on/off receiver: refreshes xray after waking from a long sleep (Doze with no net event).
-    private var screenReceiver: BroadcastReceiver? = null
-
-    @Volatile
-    private var screenOffAt = 0L
 
     private val mtu = 1500
     private val isDebuggable: Boolean
@@ -187,17 +177,13 @@ class OnthecrowVpnService : VpnService() {
         underlyingSeeded = false
         lastUnderlying = null
         registerUnderlyingNetworkCallback()
-        registerScreenReceiver()
     }
 
     private fun stopMonitoring() {
         networkCallback?.let { cb -> runCatching { connectivityManager().unregisterNetworkCallback(cb) } }
         networkCallback = null
-        screenReceiver?.let { r -> runCatching { unregisterReceiver(r) } }
-        screenReceiver = null
         underlyingSeeded = false
         lastUnderlying = null
-        screenOffAt = 0L
         activeXrayJson = null
     }
 
@@ -237,36 +223,6 @@ class OnthecrowVpnService : VpnService() {
         }
         networkCallback = callback
         runCatching { connectivityManager().registerDefaultNetworkCallback(callback) }
-    }
-
-    /**
-     * Doze can freeze the connection while the screen is off with no network event, so the network
-     * monitor alone won't catch it. On wake after a long sleep, refresh the tunnel. Quick unlocks
-     * (under the threshold) are ignored, so there's no per-unlock disruption.
-     */
-    private fun registerScreenReceiver() {
-        if (screenReceiver != null) return
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                when (intent?.action) {
-                    Intent.ACTION_SCREEN_OFF -> screenOffAt = SystemClock.elapsedRealtime()
-                    Intent.ACTION_SCREEN_ON -> {
-                        val sleptMs = SystemClock.elapsedRealtime() - screenOffAt
-                        if (screenOffAt > 0L && sleptMs >= SCREEN_SLEEP_REFRESH_MS) {
-                            requestRefresh("screen on after ${sleptMs}ms")
-                        }
-                    }
-                }
-            }
-        }
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_OFF)
-            addAction(Intent.ACTION_SCREEN_ON)
-        }
-        screenReceiver = receiver
-        runCatching {
-            ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
-        }
     }
 
     private fun fail(message: String) {
@@ -332,7 +288,5 @@ class OnthecrowVpnService : VpnService() {
         private const val TAG = "OnthecrowVpn"
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001
-        // Only refresh on wake if the screen was off at least this long (skip quick unlocks).
-        private const val SCREEN_SLEEP_REFRESH_MS = 45_000L
     }
 }
