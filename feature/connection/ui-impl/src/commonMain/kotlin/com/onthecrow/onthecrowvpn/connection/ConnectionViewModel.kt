@@ -97,9 +97,13 @@ internal class ConnectionViewModel(
                 onEvent(ConnectionEvent.OnSnackbarRequested(result.message))
             }
             is ConfigValidationResult.Valid -> when (val perm = vpnPermissionRequester.requestPermission()) {
-                VpnPermissionResult.Granted -> when (val outcome = vpnController.connect(result.xrayJson)) {
-                    ConnectResult.Started -> Unit
-                    is ConnectResult.Failed -> onEvent(ConnectionEvent.OnSnackbarRequested(outcome.message))
+                VpnPermissionResult.Granted -> {
+                    // Non-blocking advisory (e.g. Windows: a system proxy that may bypass the tunnel).
+                    vpnController.connectNotice()?.let { onEvent(ConnectionEvent.OnSnackbarRequested(it)) }
+                    when (val outcome = vpnController.connect(result.xrayJson)) {
+                        ConnectResult.Started -> Unit
+                        is ConnectResult.Failed -> onEvent(ConnectionEvent.OnSnackbarRequested(outcome.message))
+                    }
                 }
                 is VpnPermissionResult.Denied -> onEvent(ConnectionEvent.OnSnackbarRequested(perm.message))
             }

@@ -3,6 +3,7 @@ package com.onthecrow.onthecrowvpn.vpn
 import com.onthecrow.onthecrowvpn.xray.XrayConfigSanitizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +37,7 @@ actual class PlatformVpnController : VpnController {
         val process: Process,
         val workDir: File,
         val output: StringBuilder,
+        var watchJob: Job? = null,
     )
 
     init {
@@ -98,8 +100,9 @@ actual class PlatformVpnController : VpnController {
 
             val output = StringBuilder()
             val process = launchWindows(workDir, sidecar, wrapper, runFile, tunName, serverHost, output)
-            session = Session(process, workDir, output)
-            watchSession(process, workDir, output)
+            session = Session(process, workDir, output).also {
+                it.watchJob = watchSession(process, workDir, output)
+            }
             ConnectResult.Started
         }.getOrElse { error ->
             val message = error.message ?: "Failed to start VPN"
@@ -113,19 +116,52 @@ actual class PlatformVpnController : VpnController {
         return ConnectResult.Failed(message)
     }
 
+    /**
+     * Windows only: this is a TUN full-tunnel VPN and does not use (or need) a system proxy. If one is
+     * configured — e.g. left enabled by another proxy-based VPN like Happ (127.0.0.1:10809) — proxy-aware
+     * apps (browsers) talk to that proxy instead of routing through the tunnel, so traffic bypasses us and
+     * breaks outright if the proxy is a dead loopback one. We don't touch the user's settings (could be an
+     * intentional/corporate proxy), we just advise. Returns null on macOS / when no proxy is enabled.
+     */
+    override fun connectNotice(): String? {
+        if (DesktopVpnSupport.os != DesktopOs.WINDOWS) return null
+        return runCatching {
+            val proc = ProcessBuilder(
+                "reg", "query",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            ).redirectErrorStream(true).start()
+            val out = proc.inputStream.bufferedReader().readText()
+            proc.waitForCompat(2_000)
+            val enabled = Regex("""ProxyEnable\s+REG_DWORD\s+0x([0-9a-fA-F]+)""").find(out)
+                ?.groupValues?.get(1)?.toIntOrNull(16) == 1
+            if (!enabled) return null
+            val server = Regex("""ProxyServer\s+REG_SZ\s+(.+)""").find(out)?.groupValues?.get(1)?.trim()
+            "A system proxy is enabled" + (server?.let { " ($it)" } ?: "") +
+                " - your browser may bypass the VPN. Disable it (Settings > Network > Proxy) for full-tunnel routing."
+        }.getOrNull()
+    }
+
     private suspend fun stopSessionLocked() {
         val current = session ?: return
         session = null
+        // Stop watching before we tear down, so the poller can't observe the process exit
+        // and clobber the status with a spurious Error after an intentional disconnect.
+        current.watchJob?.cancel()
         withContext(Dispatchers.IO) {
             runCatching { File(current.workDir, "stop").writeText("stop") }
             val ended = current.process.waitForCompat(5_000)
             if (!ended) runCatching { current.process.destroy() }
+            // The sidecar runs elevated and is killed by the wrapper's Cleanup (via the stop sentinel),
+            // not by us. Its onthecrow-xray.exe / wintun.dll stay locked for a moment after it dies, so
+            // wait until the exe is releasable before the next connect wipes & re-copies the work dir —
+            // otherwise switching configs fails with "failed to delete it" and leaves the dir half-written.
+            waitForSidecarReleased(current.workDir, 8_000)
             // Keep the dir for inspection; it is wiped at the next connect.
         }
     }
 
-    private fun watchSession(process: Process, workDir: File, output: StringBuilder) {
-        scope.launch {
+    private fun watchSession(process: Process, workDir: File, output: StringBuilder): Job {
+        return scope.launch {
             val ready = File(workDir, "ready")
             val errorFile = File(workDir, "error")
             while (true) {
@@ -164,6 +200,13 @@ actual class PlatformVpnController : VpnController {
         runCatching {
             println("[OnthecrowVPN] ---- launcher output ----")
             println(output.toString().ifBlank { "(empty)" })
+            // Wrapper steps (route exclusion, adapter wait) log here; the sidecar can't
+            // share this file, so it's where Windows-side failures surface.
+            val wrapperLog = File(workDir, "wrapper.log")
+            if (wrapperLog.exists()) {
+                println("[OnthecrowVPN] ---- wrapper.log (${wrapperLog.absolutePath}) ----")
+                println(wrapperLog.readText())
+            }
             val log = File(workDir, "sidecar.log")
             println("[OnthecrowVPN] ---- sidecar.log (${log.absolutePath}) ----")
             println(if (log.exists()) log.readText() else "(no log file)")
@@ -182,10 +225,10 @@ actual class PlatformVpnController : VpnController {
     ): Process {
         val wintun = DesktopVpnSupport.resolveWintunDll()
             ?: error("wintun.dll not found — download from wintun.net into local-libs/libxray-desktop/windows-x64/")
-        val localSidecar = File(workDir, "onthecrow-xray.exe").also { sidecar.copyTo(it, overwrite = true) }
+        val localSidecar = File(workDir, "onthecrow-xray.exe").also { copyResilient(sidecar, it) }
         // wintun.dll MUST sit next to the sidecar exe.
-        wintun.copyTo(File(workDir, "wintun.dll"), overwrite = true)
-        val localWrapper = File(workDir, "vpn-windows.ps1").also { wrapper.copyTo(it, overwrite = true) }
+        copyResilient(wintun, File(workDir, "wintun.dll"))
+        val localWrapper = File(workDir, "vpn-windows.ps1").also { copyResilient(wrapper, it) }
 
         fun ps(s: String) = "'" + s.replace("'", "''") + "'"
         val launcher = File(workDir, "launch.ps1").apply {
@@ -244,5 +287,33 @@ actual class PlatformVpnController : VpnController {
             Thread.sleep(100)
         }
         return !isAlive
+    }
+
+    /**
+     * Blocks until the old sidecar binary in [workDir] is no longer locked (the elevated
+     * onthecrow-xray.exe holds it open until it fully exits), so the next connect can wipe and
+     * re-copy the work dir cleanly. `delete()` succeeds only once the handle is released.
+     */
+    private fun waitForSidecarReleased(workDir: File, timeoutMillis: Long) {
+        val exe = File(workDir, "onthecrow-xray.exe")
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (!exe.exists() || exe.delete()) return
+            Thread.sleep(150)
+        }
+    }
+
+    /**
+     * Copies [src] over [dst], tolerating a transient Windows file lock from a just-stopped sidecar.
+     * The binaries never change between sessions, so if the destination still can't be overwritten
+     * but an identical copy is already present, reuse it instead of failing the whole connect.
+     */
+    private fun copyResilient(src: File, dst: File) {
+        repeat(10) {
+            if (runCatching { src.copyTo(dst, overwrite = true) }.isSuccess) return
+            if (dst.exists() && dst.length() == src.length()) return
+            Thread.sleep(150)
+        }
+        if (!(dst.exists() && dst.length() == src.length())) src.copyTo(dst, overwrite = true)
     }
 }
