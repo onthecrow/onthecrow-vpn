@@ -59,6 +59,19 @@ internal object DesktopVpnSupport {
         devCandidates = listOf("local-libs/libxray-desktop/$archSlug/wintun.dll"),
     )
 
+    /**
+     * Resolves the native macOS NetworkExtension bridge executable (the helper embedded in the .app
+     * bundle that drives the system VPN). Packaged by its plain name; dev runs fall back to the
+     * Gradle-built Kotlin/Native binary.
+     */
+    fun resolveBridge(): File? = resolve(
+        packagedName = "onthecrow-macos-bridge",
+        devCandidates = listOf(
+            "core/vpn/macos-bridge/build/bin/macosArm64/releaseExecutable/onthecrow-macos-bridge.kexe",
+            "core/vpn/macos-bridge/build/bin/macosArm64/debugExecutable/onthecrow-macos-bridge.kexe",
+        ),
+    )
+
     private fun resolve(packagedName: String, devCandidates: List<String>): File? {
         // Packaged: Compose flattens the matching os-arch subdir into the resources
         // root, so files live there by their basename.

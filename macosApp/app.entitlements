@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements applied to the JVM host app bundle at signing time (Phase 4). The app is the
+      requester of OSSystemExtensionRequest, so it needs the system-extension install entitlement,
+      and it shares the App Group with the system extension to read the tunnel's failure reason.
+    -->
+    <key>com.apple.developer.system-extension.install</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.onthecrow.onthecrowvpn</string>
+    </array>
+</dict>
+</plist>

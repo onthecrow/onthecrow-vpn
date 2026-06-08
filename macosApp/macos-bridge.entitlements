@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements for the native NE bridge (onthecrow-macos-bridge). It drives NETunnelProviderManager
+      (needs the packet-tunnel-provider NE entitlement) and may activate the system extension (needs
+      system-extension.install), and reads the tunnel's failure reason via the shared App Group.
+      In dev mode (SIP off) these are honored on a locally/Developer-ID-signed binary without a
+      provisioning profile.
+    -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider-systemextension</string>
+    </array>
+    <key>com.apple.developer.system-extension.install</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.onthecrow.onthecrowvpn</string>
+    </array>
+</dict>
+</plist>

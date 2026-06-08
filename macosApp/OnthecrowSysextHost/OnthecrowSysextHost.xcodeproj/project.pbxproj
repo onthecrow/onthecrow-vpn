@@ -1,0 +1,822 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0671B6552FD53A4F00910050 /* OnthecrowTunnel.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0671B6542FD53A4F00910050 /* OnthecrowTunnel.framework */; };
+		0671B6592FD53A6C00910050 /* LibXray.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0671B6582FD53A6C00910050 /* LibXray.xcframework */; };
+		068039C72FD3B1E800B4FD9E /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 068039C62FD3B1E700B4FD9E /* NetworkExtension.framework */; };
+		068039D12FD3B1E800B4FD9E /* com.onthecrow.onthecrowvpn.SystemExtension.systemextension in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = 068039C42FD3B1E700B4FD9E /* com.onthecrow.onthecrowvpn.SystemExtension.systemextension */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		068039A42FD3B11A00B4FD9E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0680398E2FD3B11900B4FD9E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 068039952FD3B11900B4FD9E;
+			remoteInfo = OnthecrowSysextHost;
+		};
+		068039AE2FD3B11A00B4FD9E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0680398E2FD3B11900B4FD9E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 068039952FD3B11900B4FD9E;
+			remoteInfo = OnthecrowSysextHost;
+		};
+		068039CF2FD3B1E800B4FD9E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0680398E2FD3B11900B4FD9E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 068039C32FD3B1E700B4FD9E;
+			remoteInfo = SystemExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		068039D62FD3B1E800B4FD9E /* Embed System Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(SYSTEM_EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				068039D12FD3B1E800B4FD9E /* com.onthecrow.onthecrowvpn.SystemExtension.systemextension in Embed System Extensions */,
+			);
+			name = "Embed System Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0671B6542FD53A4F00910050 /* OnthecrowTunnel.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OnthecrowTunnel.framework; path = "../../core/vpn/ios-tunnel/build/bin/macosArm64/debugFramework/OnthecrowTunnel.framework"; sourceTree = "<group>"; };
+		0671B6582FD53A6C00910050 /* LibXray.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LibXray.xcframework; path = ../../libs/LibXray/LibXray.xcframework; sourceTree = "<group>"; };
+		068039962FD3B11900B4FD9E /* OnthecrowSysextHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OnthecrowSysextHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		068039A32FD3B11A00B4FD9E /* OnthecrowSysextHostTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OnthecrowSysextHostTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		068039AD2FD3B11A00B4FD9E /* OnthecrowSysextHostUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OnthecrowSysextHostUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		068039C42FD3B1E700B4FD9E /* com.onthecrow.onthecrowvpn.SystemExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = com.onthecrow.onthecrowvpn.SystemExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
+		068039C62FD3B1E700B4FD9E /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		068039D22FD3B1E800B4FD9E /* Exceptions for "SystemExtension" folder in "SystemExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 068039C32FD3B1E700B4FD9E /* SystemExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		068039982FD3B11900B4FD9E /* OnthecrowSysextHost */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OnthecrowSysextHost;
+			sourceTree = "<group>";
+		};
+		068039A62FD3B11A00B4FD9E /* OnthecrowSysextHostTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OnthecrowSysextHostTests;
+			sourceTree = "<group>";
+		};
+		068039B02FD3B11A00B4FD9E /* OnthecrowSysextHostUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OnthecrowSysextHostUITests;
+			sourceTree = "<group>";
+		};
+		068039C82FD3B1E800B4FD9E /* SystemExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				068039D22FD3B1E800B4FD9E /* Exceptions for "SystemExtension" folder in "SystemExtension" target */,
+			);
+			path = SystemExtension;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		068039932FD3B11900B4FD9E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039A02FD3B11A00B4FD9E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039AA2FD3B11A00B4FD9E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039C12FD3B1E700B4FD9E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0671B6592FD53A6C00910050 /* LibXray.xcframework in Frameworks */,
+				0671B6552FD53A4F00910050 /* OnthecrowTunnel.framework in Frameworks */,
+				068039C72FD3B1E800B4FD9E /* NetworkExtension.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0680398D2FD3B11900B4FD9E = {
+			isa = PBXGroup;
+			children = (
+				068039982FD3B11900B4FD9E /* OnthecrowSysextHost */,
+				068039A62FD3B11A00B4FD9E /* OnthecrowSysextHostTests */,
+				068039B02FD3B11A00B4FD9E /* OnthecrowSysextHostUITests */,
+				068039C82FD3B1E800B4FD9E /* SystemExtension */,
+				068039C52FD3B1E700B4FD9E /* Frameworks */,
+				068039972FD3B11900B4FD9E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		068039972FD3B11900B4FD9E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				068039962FD3B11900B4FD9E /* OnthecrowSysextHost.app */,
+				068039A32FD3B11A00B4FD9E /* OnthecrowSysextHostTests.xctest */,
+				068039AD2FD3B11A00B4FD9E /* OnthecrowSysextHostUITests.xctest */,
+				068039C42FD3B1E700B4FD9E /* com.onthecrow.onthecrowvpn.SystemExtension.systemextension */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		068039C52FD3B1E700B4FD9E /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				0671B6582FD53A6C00910050 /* LibXray.xcframework */,
+				0671B6542FD53A4F00910050 /* OnthecrowTunnel.framework */,
+				068039C62FD3B1E700B4FD9E /* NetworkExtension.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		068039952FD3B11900B4FD9E /* OnthecrowSysextHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 068039B72FD3B11A00B4FD9E /* Build configuration list for PBXNativeTarget "OnthecrowSysextHost" */;
+			buildPhases = (
+				068039922FD3B11900B4FD9E /* Sources */,
+				068039932FD3B11900B4FD9E /* Frameworks */,
+				068039942FD3B11900B4FD9E /* Resources */,
+				068039D62FD3B1E800B4FD9E /* Embed System Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				068039D02FD3B1E800B4FD9E /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				068039982FD3B11900B4FD9E /* OnthecrowSysextHost */,
+			);
+			name = OnthecrowSysextHost;
+			packageProductDependencies = (
+			);
+			productName = OnthecrowSysextHost;
+			productReference = 068039962FD3B11900B4FD9E /* OnthecrowSysextHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+		068039A22FD3B11A00B4FD9E /* OnthecrowSysextHostTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 068039BA2FD3B11A00B4FD9E /* Build configuration list for PBXNativeTarget "OnthecrowSysextHostTests" */;
+			buildPhases = (
+				0680399F2FD3B11A00B4FD9E /* Sources */,
+				068039A02FD3B11A00B4FD9E /* Frameworks */,
+				068039A12FD3B11A00B4FD9E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				068039A52FD3B11A00B4FD9E /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				068039A62FD3B11A00B4FD9E /* OnthecrowSysextHostTests */,
+			);
+			name = OnthecrowSysextHostTests;
+			packageProductDependencies = (
+			);
+			productName = OnthecrowSysextHostTests;
+			productReference = 068039A32FD3B11A00B4FD9E /* OnthecrowSysextHostTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		068039AC2FD3B11A00B4FD9E /* OnthecrowSysextHostUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 068039BD2FD3B11A00B4FD9E /* Build configuration list for PBXNativeTarget "OnthecrowSysextHostUITests" */;
+			buildPhases = (
+				068039A92FD3B11A00B4FD9E /* Sources */,
+				068039AA2FD3B11A00B4FD9E /* Frameworks */,
+				068039AB2FD3B11A00B4FD9E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				068039AF2FD3B11A00B4FD9E /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				068039B02FD3B11A00B4FD9E /* OnthecrowSysextHostUITests */,
+			);
+			name = OnthecrowSysextHostUITests;
+			packageProductDependencies = (
+			);
+			productName = OnthecrowSysextHostUITests;
+			productReference = 068039AD2FD3B11A00B4FD9E /* OnthecrowSysextHostUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		068039C32FD3B1E700B4FD9E /* SystemExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 068039D32FD3B1E800B4FD9E /* Build configuration list for PBXNativeTarget "SystemExtension" */;
+			buildPhases = (
+				0671B6532FD539D500910050 /* ShellScript */,
+				068039C02FD3B1E700B4FD9E /* Sources */,
+				068039C12FD3B1E700B4FD9E /* Frameworks */,
+				068039C22FD3B1E700B4FD9E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				068039C82FD3B1E800B4FD9E /* SystemExtension */,
+			);
+			name = SystemExtension;
+			packageProductDependencies = (
+			);
+			productName = SystemExtension;
+			productReference = 068039C42FD3B1E700B4FD9E /* com.onthecrow.onthecrowvpn.SystemExtension.systemextension */;
+			productType = "com.apple.product-type.system-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0680398E2FD3B11900B4FD9E /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					068039952FD3B11900B4FD9E = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					068039A22FD3B11A00B4FD9E = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 068039952FD3B11900B4FD9E;
+					};
+					068039AC2FD3B11A00B4FD9E = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 068039952FD3B11900B4FD9E;
+					};
+					068039C32FD3B1E700B4FD9E = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = 068039912FD3B11900B4FD9E /* Build configuration list for PBXProject "OnthecrowSysextHost" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0680398D2FD3B11900B4FD9E;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 068039972FD3B11900B4FD9E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				068039952FD3B11900B4FD9E /* OnthecrowSysextHost */,
+				068039A22FD3B11A00B4FD9E /* OnthecrowSysextHostTests */,
+				068039AC2FD3B11A00B4FD9E /* OnthecrowSysextHostUITests */,
+				068039C32FD3B1E700B4FD9E /* SystemExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		068039942FD3B11900B4FD9E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039A12FD3B11A00B4FD9E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039AB2FD3B11A00B4FD9E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039C22FD3B1E700B4FD9E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		0671B6532FD539D500910050 /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\ncd \"$SRCROOT/../..\"\n./gradlew :core:vpn:ios-tunnel:linkDebugFrameworkMacosArm64\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		068039922FD3B11900B4FD9E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0680399F2FD3B11A00B4FD9E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039A92FD3B11A00B4FD9E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		068039C02FD3B1E700B4FD9E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		068039A52FD3B11A00B4FD9E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 068039952FD3B11900B4FD9E /* OnthecrowSysextHost */;
+			targetProxy = 068039A42FD3B11A00B4FD9E /* PBXContainerItemProxy */;
+		};
+		068039AF2FD3B11A00B4FD9E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 068039952FD3B11900B4FD9E /* OnthecrowSysextHost */;
+			targetProxy = 068039AE2FD3B11A00B4FD9E /* PBXContainerItemProxy */;
+		};
+		068039D02FD3B1E800B4FD9E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 068039C32FD3B1E700B4FD9E /* SystemExtension */;
+			targetProxy = 068039CF2FD3B1E800B4FD9E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		068039B52FD3B11A00B4FD9E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = Q468Q9633Q;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		068039B62FD3B11A00B4FD9E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = Q468Q9633Q;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		068039B82FD3B11A00B4FD9E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OnthecrowSysextHost/OnthecrowSysextHost.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = Q468Q9633Q;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "Onthecrow Host DevID";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		068039B92FD3B11A00B4FD9E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = OnthecrowSysextHost/OnthecrowSysextHost.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = Q468Q9633Q;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "Onthecrow Host DevID";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		068039BB2FD3B11A00B4FD9E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q468Q9633Q;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowSysextHostTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OnthecrowSysextHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OnthecrowSysextHost";
+			};
+			name = Debug;
+		};
+		068039BC2FD3B11A00B4FD9E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q468Q9633Q;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowSysextHostTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/OnthecrowSysextHost.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/OnthecrowSysextHost";
+			};
+			name = Release;
+		};
+		068039BE2FD3B11A00B4FD9E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q468Q9633Q;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowSysextHostUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = OnthecrowSysextHost;
+			};
+			name = Debug;
+		};
+		068039BF2FD3B11A00B4FD9E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q468Q9633Q;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowSysextHostUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = OnthecrowSysextHost;
+			};
+			name = Release;
+		};
+		068039D42FD3B1E800B4FD9E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = SystemExtension/SystemExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = Q468Q9633Q;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/../../core/vpn/ios-tunnel/build/bin/macosArm64/debugFramework";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SystemExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = SystemExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-ObjC",
+					"-lc++",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.SystemExtension;
+				PRODUCT_NAME = "$(inherited)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "Onthecrow Sysext DevID";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		068039D52FD3B1E800B4FD9E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = SystemExtension/SystemExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = Q468Q9633Q;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = "$(SRCROOT)/../../core/vpn/ios-tunnel/build/bin/macosArm64/debugFramework";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SystemExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = SystemExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"-ObjC",
+					"-lc++",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.SystemExtension;
+				PRODUCT_NAME = "$(inherited)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "Onthecrow Sysext DevID";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		068039912FD3B11900B4FD9E /* Build configuration list for PBXProject "OnthecrowSysextHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				068039B52FD3B11A00B4FD9E /* Debug */,
+				068039B62FD3B11A00B4FD9E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		068039B72FD3B11A00B4FD9E /* Build configuration list for PBXNativeTarget "OnthecrowSysextHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				068039B82FD3B11A00B4FD9E /* Debug */,
+				068039B92FD3B11A00B4FD9E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		068039BA2FD3B11A00B4FD9E /* Build configuration list for PBXNativeTarget "OnthecrowSysextHostTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				068039BB2FD3B11A00B4FD9E /* Debug */,
+				068039BC2FD3B11A00B4FD9E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		068039BD2FD3B11A00B4FD9E /* Build configuration list for PBXNativeTarget "OnthecrowSysextHostUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				068039BE2FD3B11A00B4FD9E /* Debug */,
+				068039BF2FD3B11A00B4FD9E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		068039D32FD3B1E800B4FD9E /* Build configuration list for PBXNativeTarget "SystemExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				068039D42FD3B1E800B4FD9E /* Debug */,
+				068039D52FD3B1E800B4FD9E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0680398E2FD3B11900B4FD9E /* Project object */;
+}

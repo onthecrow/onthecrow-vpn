@@ -13,6 +13,13 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/**
+ * Desktop VPN controller.
+ *
+ *  - **macOS**: a real NetworkExtension system VPN (registered in System Settings), driven through
+ *    the native [MacosNeController] bridge. No admin password, no utun sidecar.
+ *  - **Windows**: the elevated PowerShell + Wintun sidecar (unchanged).
+ */
 actual class PlatformVpnController : VpnController {
     private val mutableStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     override val status: StateFlow<ConnectionStatus> = mutableStatus
@@ -20,6 +27,8 @@ actual class PlatformVpnController : VpnController {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sanitizer = XrayConfigSanitizer()
     private val mutex = Mutex()
+
+    private val macos = MacosNeController { status -> mutableStatus.value = status }
 
     private var session: Session? = null
 
@@ -30,41 +39,51 @@ actual class PlatformVpnController : VpnController {
     )
 
     init {
-        // Reconcile at launch with the real system state. The elevated helper from a previous
-        // run may still be alive (its root process can outlive the app) and watching the stop
-        // sentinel. Signal it to tear down so the app and the OS agree on a clean Disconnected
-        // state instead of leaving an invisible, unmanageable tunnel up.
-        runCatching {
-            val workDir = File(System.getProperty("java.io.tmpdir"), "onthecrowvpn-vpn")
-            val ready = File(workDir, "ready")
-            val stop = File(workDir, "stop")
-            if (ready.exists() && !stop.exists()) {
-                stop.writeText("stop")
-            }
+        // On macOS, start observing the real system VPN status immediately (the profile may already
+        // be connected from a previous app run). Windows has no equivalent reconcile.
+        if (DesktopVpnSupport.os == DesktopOs.MACOS) {
+            macos.start()
         }
     }
 
     override suspend fun connect(xrayJson: String): ConnectResult = mutex.withLock {
-        if (DesktopVpnSupport.os == DesktopOs.UNSUPPORTED) {
-            return@withLock failNow("VPN is not supported on this OS yet")
+        when (DesktopVpnSupport.os) {
+            DesktopOs.UNSUPPORTED -> failNow("VPN is not supported on this OS yet")
+            // Raw config — the bridge (AppleTunnelManager) injects the tun inbound itself, like iOS.
+            DesktopOs.MACOS -> macos.connect(xrayJson)
+            DesktopOs.WINDOWS -> connectWindows(xrayJson)
         }
+    }
+
+    override suspend fun disconnect() = mutex.withLock {
+        if (DesktopVpnSupport.os == DesktopOs.MACOS) {
+            macos.disconnect()
+        } else {
+            mutableStatus.value = ConnectionStatus.Disconnecting
+            stopSessionLocked()
+            mutableStatus.value = ConnectionStatus.Disconnected
+        }
+    }
+
+    // ---- Windows (UAC + PowerShell wrapper, Wintun) ----
+
+    private suspend fun connectWindows(xrayJson: String): ConnectResult {
         val sidecar = DesktopVpnSupport.resolveSidecar()
-            ?: return@withLock failNow("VPN engine not found. Run scripts/build-libxray-desktop.sh")
+            ?: return failNow("VPN engine not found. Run scripts/build-libxray-desktop.sh")
         val wrapper = DesktopVpnSupport.resolveWrapper()
-            ?: return@withLock failNow("VPN helper script not found")
+            ?: return failNow("VPN helper script not found")
 
         stopSessionLocked()
         mutableStatus.value = ConnectionStatus.Connecting
 
-        return@withLock runCatching {
-            val tunName = if (DesktopVpnSupport.os == DesktopOs.WINDOWS) "OnthecrowVPN" else "utun9"
+        return runCatching {
+            val tunName = "OnthecrowVPN"
             val runtimeJson = sanitizer.withTunInbound(xrayJson, name = tunName, mtu = 1500, logLevel = "warning")
             val serverHost = DesktopVpnSupport.extractServerHosts(runtimeJson).firstOrNull()
                 ?: error("No proxy server address found in config")
 
-            // Fresh session dir in temp (NOT TCC-protected on macOS; clean on Windows).
-            // Binaries/wrappers are copied here so the elevated process runs them from a
-            // location it can read (macOS TCC blocks root access to ~/Documents).
+            // Fresh session dir in temp (clean on Windows). Binaries/wrappers are copied here so the
+            // elevated process runs them from a location it can read.
             val workDir = File(System.getProperty("java.io.tmpdir"), "onthecrowvpn-vpn")
             workDir.deleteRecursively()
             workDir.mkdirs()
@@ -78,10 +97,7 @@ actual class PlatformVpnController : VpnController {
             println("[OnthecrowVPN] os=${DesktopVpnSupport.os} server=$serverHost tun=$tunName")
 
             val output = StringBuilder()
-            val process = when (DesktopVpnSupport.os) {
-                DesktopOs.WINDOWS -> launchWindows(workDir, sidecar, wrapper, runFile, tunName, serverHost, output)
-                else -> launchMacos(workDir, sidecar, wrapper, runFile, tunName, serverHost, output)
-            }
+            val process = launchWindows(workDir, sidecar, wrapper, runFile, tunName, serverHost, output)
             session = Session(process, workDir, output)
             watchSession(process, workDir, output)
             ConnectResult.Started
@@ -90,12 +106,6 @@ actual class PlatformVpnController : VpnController {
             mutableStatus.value = ConnectionStatus.Error(message)
             ConnectResult.Failed(message)
         }
-    }
-
-    override suspend fun disconnect() = mutex.withLock {
-        mutableStatus.value = ConnectionStatus.Disconnecting
-        stopSessionLocked()
-        mutableStatus.value = ConnectionStatus.Disconnected
     }
 
     private fun failNow(message: String): ConnectResult {
@@ -160,48 +170,6 @@ actual class PlatformVpnController : VpnController {
             println("[OnthecrowVPN] ---------------------------------")
         }
     }
-
-    // ---- macOS (osascript + bash wrapper, utun) ----
-
-    private fun launchMacos(
-        workDir: File,
-        sidecar: File,
-        wrapper: File,
-        runFile: File,
-        tunName: String,
-        serverHost: String,
-        output: StringBuilder,
-    ): Process {
-        val localSidecar = File(workDir, "onthecrow-xray").also {
-            sidecar.copyTo(it, overwrite = true); it.setExecutable(true)
-        }
-        val localWrapper = File(workDir, "vpn-macos.sh").also {
-            wrapper.copyTo(it, overwrite = true); it.setExecutable(true)
-        }
-        fun q(s: String) = "'" + s.replace("'", "'\\''") + "'"
-        val launcher = File(workDir, "launch.sh").apply {
-            writeText(
-                buildString {
-                    appendLine("#!/bin/bash")
-                    // Elevated cwd inherits ~/Documents which root can't access (TCC).
-                    appendLine("cd ${q(workDir.absolutePath)} || cd /")
-                    append("exec /bin/bash ")
-                    append(q(localWrapper.absolutePath)); append(' ')
-                    append(q(localSidecar.absolutePath)); append(' ')
-                    append(q(runFile.absolutePath)); append(' ')
-                    append(q(tunName)); append(' ')
-                    append(q(serverHost)); append(' ')
-                    append(q(workDir.absolutePath))
-                    appendLine()
-                },
-            )
-            setExecutable(true)
-        }
-        val appleScript = "do shell script \"/bin/bash '${launcher.absolutePath}'\" with administrator privileges"
-        return startAndDrain(ProcessBuilder("osascript", "-e", appleScript), output)
-    }
-
-    // ---- Windows (UAC + PowerShell wrapper, Wintun) ----
 
     private fun launchWindows(
         workDir: File,

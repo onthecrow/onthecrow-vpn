@@ -53,6 +53,7 @@ class XrayConfigSanitizer(
         name: String = "tun0",
         mtu: Int = 1500,
         logLevel: String? = null,
+        errorLogPath: String? = null,
     ): String {
         val root = runCatching { json.parseToJsonElement(xrayJson).jsonObject }.getOrNull()
             ?: return xrayJson
@@ -69,7 +70,16 @@ class XrayConfigSanitizer(
             add(tunInbound)
             existingInbounds?.forEach { add(it) }
         }
-        val logBlock = logLevel?.let { buildJsonObject { put("loglevel", it) } }
+        val logBlock = if (logLevel != null || errorLogPath != null) {
+            buildJsonObject {
+                if (logLevel != null) put("loglevel", logLevel)
+                // Write xray's error log to a file (e.g. the App Group container) so a sandboxed
+                // packet-tunnel extension's diagnostics are readable from outside.
+                if (errorLogPath != null) put("error", errorLogPath)
+            }
+        } else {
+            null
+        }
         val newRoot = buildJsonObject {
             var inboundsWritten = false
             var logWritten = false
@@ -87,6 +97,9 @@ class XrayConfigSanitizer(
                         }
                         logWritten = true
                     }
+                    // Some share-link converters leak the config remark into outbound.sendThrough,
+                    // which Xray rejects ("unable to send through: <remark>"). Drop any non-IP value.
+                    "outbounds" -> put(key, sanitizeOutbounds(value))
                     else -> put(key, value)
                 }
             }
@@ -94,6 +107,15 @@ class XrayConfigSanitizer(
             if (!logWritten && logBlock != null) put("log", logBlock)
         }
         return json.encodeToString(JsonObject.serializer(), newRoot)
+    }
+
+    private fun sanitizeOutbounds(value: JsonElement): JsonElement {
+        val array = value as? JsonArray ?: return value
+        return buildJsonArray {
+            array.forEach { entry ->
+                if (entry is JsonObject) add(sanitizeOutbound(entry)) else add(entry)
+            }
+        }
     }
 
     private fun sanitizeOutbound(outbound: JsonObject): JsonObject {

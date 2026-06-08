@@ -16,15 +16,17 @@ kotlin {
     listOf(
         iosArm64(),
         iosSimulatorArm64(),
-    ).forEach { iosTarget ->
-        val archSlice = when (iosTarget.name) {
+        macosArm64(),
+    ).forEach { appleTarget ->
+        val archSlice = when (appleTarget.name) {
             "iosArm64" -> "ios-arm64"
             "iosSimulatorArm64" -> "ios-arm64_x86_64-simulator"
-            else -> throw GradleException("Unknown iOS target: ${iosTarget.name}")
+            "macosArm64" -> "macos-arm64_x86_64"
+            else -> throw GradleException("Unknown Apple target: ${appleTarget.name}")
         }
         val sliceDir = rootProject.file("libs/LibXray/LibXray.xcframework/$archSlice")
 
-        iosTarget.compilations.getByName("main") {
+        appleTarget.compilations.getByName("main") {
             @Suppress("unused")
             val libxray by cinterops.creating {
                 defFile(project.file("src/nativeInterop/cinterop/libxray.def"))
@@ -33,7 +35,7 @@ kotlin {
             }
         }
 
-        iosTarget.binaries.all {
+        appleTarget.binaries.all {
             if (sliceDir.exists()) {
                 linkerOpts("-F${sliceDir.absolutePath}", "-framework", "LibXray")
             }

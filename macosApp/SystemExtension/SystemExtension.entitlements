@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      macOS packages NE providers as *system extensions*, so the entitlement value carries the
+      "-systemextension" suffix (unlike the iOS app-extension value "packet-tunnel-provider").
+    -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>packet-tunnel-provider-systemextension</string>
+    </array>
+    <!-- Shared with the JVM app + iOS so OnthecrowTunnelCore can publish failure reasons. -->
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.onthecrow.onthecrowvpn</string>
+    </array>
+</dict>
+</plist>
