@@ -60,17 +60,21 @@ internal object DesktopVpnSupport {
     )
 
     /**
-     * Resolves the native macOS NetworkExtension bridge executable (the helper embedded in the .app
-     * bundle that drives the system VPN). Packaged by its plain name; dev runs fall back to the
-     * Gradle-built Kotlin/Native binary.
+     * Resolves the native macOS NE bridge executable. It MUST be the one *inside the provisioned
+     * service .app* (OnthecrowVpnService.app): the embedded provisioning profile authorizes the
+     * restricted NetworkExtension entitlement, and the system pins the provider to the activating
+     * app's designated requirement. A bare Kotlin/Native binary is AMFI-killed ("no matching
+     * profile"), so we never use it.
      */
-    fun resolveBridge(): File? = resolve(
-        packagedName = "onthecrow-macos-bridge",
-        devCandidates = listOf(
-            "core/vpn/macos-bridge/build/bin/macosArm64/releaseExecutable/onthecrow-macos-bridge.kexe",
-            "core/vpn/macos-bridge/build/bin/macosArm64/debugExecutable/onthecrow-macos-bridge.kexe",
-        ),
-    )
+    fun resolveBridge(): File? {
+        val installed = File("/Applications/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge")
+        if (installed.exists()) return installed
+        // Dev fallback: a service .app freshly built under the repo (scripts/build-macos-service-app.sh).
+        return resolve(
+            packagedName = "OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge",
+            devCandidates = listOf("build/macos/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge"),
+        )
+    }
 
     private fun resolve(packagedName: String, devCandidates: List<String>): File? {
         // Packaged: Compose flattens the matching os-arch subdir into the resources

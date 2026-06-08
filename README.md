@@ -2,13 +2,20 @@
 
 Kotlin Multiplatform / Compose Multiplatform VPN proof of concept.
 
-The first real VPN implementation is Android-only. iOS and Desktop share the same UI and persistence layer, validate/apply configs, and keep compile-safe no-op VPN controllers that report `VPN is not implemented on this platform yet`.
+**Android**, **iOS**, and **macOS** have real, working VPN implementations sharing the same Compose UI,
+domain logic and persistence; Windows uses an elevated sidecar; Linux reports an unsupported message.
+
+- **macOS** runs a native **NetworkExtension system VPN** (registered in System Settings) driven from
+  the Compose Desktop UI while reusing the iOS Kotlin/Native tunnel core — see
+  **[`macosApp/README.md`](macosApp/README.md)** (architecture, build & signing, debugging) and
+  **[`desktopApp/README.md`](desktopApp/README.md)** (the JVM/UI side and per-OS VPN wiring).
 
 ## Architecture
 
 - `composeApp`: shared Compose app entrypoint, Koin initialization, Navigation3 host.
 - `androidApp`, `iosApp`, `desktopApp`: thin platform launchers.
-- `core:*`: coroutines, datastore, navigation, UI theme, Xray bridge, VPN API/impl.
+- `macosApp`: the macOS NetworkExtension system extension (Xcode) + the service-app entitlements/scripts — see [`macosApp/README.md`](macosApp/README.md).
+- `core:*`: coroutines, datastore, navigation, UI theme, Xray bridge (`core:xray`), VPN API/impl (`core:vpn:api`, `core:vpn:impl`), the iOS/macOS tunnel core (`core:vpn:ios-tunnel`), and the macOS NE bridge executable (`core:vpn:macos-bridge`).
 - `feature:connection:*`: config validation/persistence use cases and the connection UI.
 
 Config validity is intentionally delegated to Xray/libXray. The app trims and checks for empty input, then calls `ConvertShareLinksToXrayJson` and `TestXray`; successful raw config is stored in app-private DataStore and revalidated on the next launch.

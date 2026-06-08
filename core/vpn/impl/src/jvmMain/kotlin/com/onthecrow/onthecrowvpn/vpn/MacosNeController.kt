@@ -35,9 +35,10 @@ internal class MacosNeController(
     fun connect(xrayJson: String): ConnectResult {
         return try {
             ensureBridge()
-            // Idempotent: registers/approves the system extension if it isn't already. Harmless when
-            // already active; required before the profile can start on a fresh install.
-            send("activate")
+            // NOTE: do NOT activate the system extension here. Activation (OSSystemExtensionRequest)
+            // is a one-time install step; re-issuing it per connect — especially while a tunnel is up
+            // (profile switch) — fails with OSSystemExtensionErrorDomain error 4 and stalls the start.
+            // The extension is installed once (see ensureActivated); connect only drives the tunnel.
             val payload = Base64.getEncoder().encodeToString(xrayJson.encodeToByteArray())
             send("connect $payload")
             emit(ConnectionStatus.Connecting)
@@ -47,6 +48,16 @@ internal class MacosNeController(
             emit(ConnectionStatus.Error(message))
             ConnectResult.Failed(message)
         }
+    }
+
+    /**
+     * One-time install of the system extension (OSSystemExtensionRequest). Call this from a first-run
+     * / "Install VPN helper" flow while disconnected — never per connect. No-op-safe if already
+     * installed. (On this dev machine the extension is already activated, so connect works without it.)
+     */
+    @Synchronized
+    fun ensureActivated() {
+        runCatching { ensureBridge(); send("activate") }
     }
 
     @Synchronized
