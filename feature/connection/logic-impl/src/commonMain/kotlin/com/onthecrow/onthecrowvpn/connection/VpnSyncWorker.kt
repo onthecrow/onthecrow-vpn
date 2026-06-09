@@ -37,10 +37,18 @@ internal class VpnSyncWorker(
             vpnController.status,
         ) { bundleState, status ->
             val cfg = bundleState.bundle?.configs?.firstOrNull { it.id == bundleState.selectedConfigId }
-            ObservedTuple(cfg, status)
+            ObservedTuple(cfg, status, bundleState.revoked)
         }
             .distinctUntilChanged()
             .collect { tuple ->
+                if (tuple.revoked) {
+                    // The bundle was deleted remotely (orchestrator already wiped local state). Stop the
+                    // tunnel AND forget the system profile, regardless of current status. App-scoped, so
+                    // this fires even when the connection screen is not on display.
+                    activeKey.value = null
+                    vpnController.revoke()
+                    return@collect
+                }
                 val cfg = tuple.config
                 when (val status = tuple.status) {
                     ConnectionStatus.Connected -> handleConnected(cfg)
@@ -93,5 +101,9 @@ internal class VpnSyncWorker(
     }
 
     private data class ConfigKey(val id: String, val url: String)
-    private data class ObservedTuple(val config: RemoteConfig?, val status: ConnectionStatus)
+    private data class ObservedTuple(
+        val config: RemoteConfig?,
+        val status: ConnectionStatus,
+        val revoked: Boolean,
+    )
 }

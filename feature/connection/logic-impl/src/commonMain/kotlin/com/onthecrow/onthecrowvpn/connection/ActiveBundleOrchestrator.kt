@@ -35,6 +35,11 @@ internal class ActiveBundleOrchestrator(
 ) {
     private val scope: CoroutineScope = scopeProvider.scope
 
+    // One-shot guard so a remote deletion triggers the local wipe exactly once, even though `combine`
+    // re-emits several times before the cleared DataStore values propagate back. Reset on the next
+    // successful snapshot (e.g. the same id is re-added later).
+    private var revocationHandled = false
+
     @OptIn(ExperimentalCoroutinesApi::class)
     private val firestoreResults: Flow<Pair<String?, BundleResult?>> =
         repository.observeBundleId()
@@ -65,10 +70,29 @@ internal class ActiveBundleOrchestrator(
         repository.observeSelectedConfigId(),
         firestoreResults,
     ) { savedId, cached, selectedId, (firestoreId, firestoreRes) ->
-        val effectiveBundle: ConfigBundle? = when (firestoreRes) {
-            is BundleResult.Success -> firestoreRes.bundle
-            is BundleResult.NotFound, is BundleResult.Error, BundleResult.Unavailable -> cached?.takeIf { it.id == savedId }
-            null -> cached?.takeIf { it.id == savedId }
+        // A genuine remote deletion of the bundle we were holding (NotFound for the id we had cached) —
+        // as opposed to a transient Error/Unavailable/offline, where we keep the cache and the tunnel.
+        val isRevocation = firestoreRes is BundleResult.NotFound &&
+            cached != null && cached.id == savedId
+
+        if (firestoreRes is BundleResult.Success) {
+            revocationHandled = false
+        }
+        if (isRevocation && !revocationHandled) {
+            revocationHandled = true
+            // Wipe local persistence so the config disappears and never resurrects on relaunch.
+            scope.launch {
+                repository.setBundleId(null)
+                repository.saveCachedBundle(null)
+                repository.selectConfig(null)
+            }
+        }
+
+        val effectiveBundle: ConfigBundle? = when {
+            isRevocation -> null
+            firestoreRes is BundleResult.Success -> firestoreRes.bundle
+            // NotFound-without-cache / Error / Unavailable / loading: keep whatever we had cached.
+            else -> cached?.takeIf { it.id == savedId }
         }
 
         val effectiveSelection: String? = when {
@@ -87,14 +111,20 @@ internal class ActiveBundleOrchestrator(
             bundle = effectiveBundle,
             selectedConfigId = effectiveSelection,
             isLoading = !savedId.isNullOrBlank() && firestoreRes == null && firestoreId == savedId && effectiveBundle == null,
-            error = when (firestoreRes) {
-                is BundleResult.Error -> firestoreRes.message
-                BundleResult.NotFound -> "Bundle not found"
-                BundleResult.Unavailable -> "Firebase is not configured"
+            error = when {
+                isRevocation -> REVOKED_MESSAGE
+                firestoreRes is BundleResult.Error -> firestoreRes.message
+                firestoreRes is BundleResult.NotFound -> "Bundle not found"
+                firestoreRes is BundleResult.Unavailable -> "Firebase is not configured"
                 else -> null
             },
+            revoked = isRevocation,
         )
     }.distinctUntilChanged()
 
     val state: Flow<ActiveBundleState> = combined.shareIn(scope, SharingStarted.Eagerly, replay = 1)
+
+    private companion object {
+        const val REVOKED_MESSAGE = "This configuration is no longer available"
+    }
 }

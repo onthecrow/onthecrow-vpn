@@ -47,7 +47,7 @@ import kotlin.system.exitProcess
  * `OSSystemExtensionRequest` APIs, so this tiny Kotlin/Native process does, reusing the same
  * [AppleTunnelManager] the iOS app uses. Communication is line-based over stdio:
  *
- *   stdin  (commands):   activate | deactivate | connect <base64-xrayJson> | disconnect
+ *   stdin  (commands):   activate | deactivate | connect <base64-xrayJson> | disconnect | revoke
  *   stdout (events, JSON): {"type":"status","value":...} | {"type":"error","message":...}
  *                          {"type":"sysext","state":...[,"message":...]} | {"type":"log",...}
  *
@@ -126,6 +126,11 @@ private suspend fun handle(command: String, tunnel: AppleTunnelManager, activato
         command == "activate" -> activator.activate()
         command == "deactivate" -> activator.deactivate()
         command == "disconnect" -> tunnel.disconnect()
+        command == "revoke" -> {
+            // Remote revocation: stop AND remove the system profile so it leaves System Settings.
+            tunnel.removeProfile()
+            emitStatus(STATUS_DISCONNECTED)
+        }
         command.startsWith("connect ") -> {
             val payload = command.removePrefix("connect ").trim()
             val xrayJson = runCatching { Base64.decode(payload).decodeToString() }.getOrNull()

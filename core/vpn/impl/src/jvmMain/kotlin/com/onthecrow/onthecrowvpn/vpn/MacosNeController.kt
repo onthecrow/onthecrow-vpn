@@ -12,7 +12,8 @@ import java.util.Base64
  * the osascript/utun sidecar. It owns a long-lived native bridge process (`:core:vpn:macos-bridge`,
  * embedded in the .app) and talks to it over stdio:
  *
- *   - we write commands to the bridge's stdin (`activate`, `connect <base64-xrayJson>`, `disconnect`),
+ *   - we write commands to the bridge's stdin (`activate`, `connect <base64-xrayJson>`, `disconnect`,
+ *     `revoke`),
  *   - the bridge streams JSON events on stdout which we translate into [ConnectionStatus] via [emit].
  *
  * The bridge is the single source of truth: it polls the real `NEVPNStatus`, so [emit] reflects the
@@ -63,6 +64,13 @@ internal class MacosNeController(
     @Synchronized
     fun disconnect() {
         runCatching { send("disconnect") }
+        emit(ConnectionStatus.Disconnecting)
+    }
+
+    /** Remote revocation: stop the tunnel AND remove the system profile (gone from System Settings). */
+    @Synchronized
+    fun revoke() {
+        runCatching { send("revoke") }
         emit(ConnectionStatus.Disconnecting)
     }
 

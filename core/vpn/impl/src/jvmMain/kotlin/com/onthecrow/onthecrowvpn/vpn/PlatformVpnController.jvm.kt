@@ -67,6 +67,18 @@ actual class PlatformVpnController : VpnController {
         }
     }
 
+    override suspend fun revoke() = mutex.withLock {
+        if (DesktopVpnSupport.os == DesktopOs.MACOS) {
+            // Stop AND remove the system VPN profile so it disappears from System Settings.
+            macos.revoke()
+        } else {
+            // Windows/Linux: no persisted system profile — stopping the sidecar is the full teardown.
+            mutableStatus.value = ConnectionStatus.Disconnecting
+            stopSessionLocked()
+            mutableStatus.value = ConnectionStatus.Disconnected
+        }
+    }
+
     // ---- Windows (UAC + PowerShell wrapper, Wintun) ----
 
     private suspend fun connectWindows(xrayJson: String): ConnectResult {

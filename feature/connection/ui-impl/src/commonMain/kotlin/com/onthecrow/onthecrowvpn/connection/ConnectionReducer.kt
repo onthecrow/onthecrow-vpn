@@ -37,7 +37,9 @@ internal class ConnectionReducer : Reducer<ConnectionState, ConnectionEvent> {
             // a Firestore re-subscription.
             val hasDefinitiveResult = s.bundle != null || s.error != null
             state.copy(
-                idInput = s.savedBundleId ?: state.idInput,
+                // On revocation the saved id was wiped — clear the input box so the config fully
+                // disappears rather than leaving the now-dead id in place.
+                idInput = if (s.revoked) "" else (s.savedBundleId ?: state.idInput),
                 bundle = s.bundle,
                 selectedConfigId = s.selectedConfigId,
                 isLoadingBundle = if (hasDefinitiveResult) false else (s.isLoading || state.isLoadingBundle),

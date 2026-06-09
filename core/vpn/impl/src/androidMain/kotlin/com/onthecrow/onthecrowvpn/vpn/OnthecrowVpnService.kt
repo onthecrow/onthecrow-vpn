@@ -62,6 +62,8 @@ class OnthecrowVpnService : VpnService() {
                 scope.launch { runConnect(xrayJson) }
             }
             ACTION_DISCONNECT -> scope.launch { runDisconnect(stopService = true) }
+            // Remote revocation: same teardown as disconnect (Android has no persisted system profile).
+            ACTION_REVOKE -> scope.launch { runDisconnect(stopService = true) }
         }
         return Service.START_STICKY
     }
@@ -284,6 +286,7 @@ class OnthecrowVpnService : VpnService() {
     companion object {
         const val ACTION_CONNECT = "com.onthecrow.onthecrowvpn.vpn.CONNECT"
         const val ACTION_DISCONNECT = "com.onthecrow.onthecrowvpn.vpn.DISCONNECT"
+        const val ACTION_REVOKE = "com.onthecrow.onthecrowvpn.vpn.REVOKE"
         const val EXTRA_XRAY_JSON = "com.onthecrow.onthecrowvpn.vpn.EXTRA_XRAY_JSON"
         private const val TAG = "OnthecrowVpn"
         private const val CHANNEL_ID = "vpn_connection"

@@ -41,7 +41,14 @@ internal class ConnectionViewModel(
         }.launchIn(viewModelScope)
 
         observeActiveBundleUseCase()
-            .onEach { onEvent(ConnectionEvent.OnActiveBundleChanged(it)) }
+            .onEach { activeBundle ->
+                onEvent(ConnectionEvent.OnActiveBundleChanged(activeBundle))
+                // The bundle was revoked remotely: the worker tears the VPN down; here we just inform
+                // the user (one-shot — `revoked` is true for a single emission).
+                if (activeBundle.revoked) {
+                    onEvent(ConnectionEvent.OnSnackbarRequested("This configuration is no longer available"))
+                }
+            }
             .launchIn(viewModelScope)
 
         vpnController.status

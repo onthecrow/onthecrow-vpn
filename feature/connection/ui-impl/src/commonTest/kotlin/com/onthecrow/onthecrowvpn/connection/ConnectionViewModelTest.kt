@@ -1,10 +1,13 @@
 package com.onthecrow.onthecrowvpn.connection
 
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigValidationResult
-import com.onthecrow.onthecrowvpn.connection.domain.ObserveSavedConnectionConfigUseCase
-import com.onthecrow.onthecrowvpn.connection.domain.ValidateConnectionConfigUseCase
-import com.onthecrow.onthecrowvpn.connection.model.ConnectionConfigSummary
-import com.onthecrow.onthecrowvpn.connection.model.ValidatedConnectionConfig
+import com.onthecrow.onthecrowvpn.connection.domain.LoadBundleUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.ObserveActiveBundleUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.model.ActiveBundleState
+import com.onthecrow.onthecrowvpn.connection.model.ConfigBundle
+import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.vpn.ConnectResult
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import com.onthecrow.onthecrowvpn.vpn.VpnController
@@ -13,7 +16,6 @@ import com.onthecrow.onthecrowvpn.vpn.VpnPermissionResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -40,66 +42,55 @@ internal class ConnectionViewModelTest {
     }
 
     @Test
-    fun startupRevalidatesSavedConfig() = runTest(dispatcher) {
-        val config = sampleConfig(rawConfig = "vless://saved")
-        val validator = FakeValidateConnectionConfigUseCase(ConfigValidationResult.Valid(config))
-
-        val viewModel = createViewModel(
-            savedConfig = " vless://saved ",
-            validator = validator,
+    fun activeBundleStatePopulatesUi() = runTest(dispatcher) {
+        val bundleFlow = MutableStateFlow(
+            ActiveBundleState(savedBundleId = "abc", bundle = sampleBundle("abc"), selectedConfigId = "c1"),
         )
+
+        val viewModel = createViewModel(bundleFlow)
         advanceUntilIdle()
 
-        assertEquals(listOf(" vless://saved "), validator.validatedInputs)
-        assertEquals("vless://saved", viewModel.state.value.rawInput)
-        assertEquals(config, viewModel.state.value.validatedConfig)
-        assertNull(viewModel.state.value.validationError)
+        assertEquals("abc", viewModel.state.value.idInput)
+        assertEquals(sampleBundle("abc"), viewModel.state.value.bundle)
+        assertEquals("c1", viewModel.state.value.selectedConfigId)
     }
 
     @Test
-    fun startupKeepsSavedTextWhenSavedConfigIsRejected() = runTest(dispatcher) {
-        val validator = FakeValidateConnectionConfigUseCase(
-            ConfigValidationResult.Invalid("unsupported payload"),
+    fun remoteRevocationClearsBundleAndShowsMessage() = runTest(dispatcher) {
+        val bundleFlow = MutableStateFlow(
+            ActiveBundleState(savedBundleId = "abc", bundle = sampleBundle("abc"), selectedConfigId = "c1"),
         )
 
-        val viewModel = createViewModel(
-            savedConfig = " broken ",
-            validator = validator,
+        val viewModel = createViewModel(bundleFlow)
+        advanceUntilIdle()
+
+        // The orchestrator wiped local state and emitted a one-shot revoked signal.
+        bundleFlow.value = ActiveBundleState(
+            revoked = true,
+            error = "This configuration is no longer available",
         )
         advanceUntilIdle()
 
-        assertEquals("broken", viewModel.state.value.rawInput)
-        assertEquals("unsupported payload", viewModel.state.value.validationError)
-        assertEquals("Saved config is no longer accepted: unsupported payload", viewModel.state.value.snackbarMessage)
+        assertNull(viewModel.state.value.bundle)
+        assertEquals("", viewModel.state.value.idInput)
+        assertEquals("This configuration is no longer available", viewModel.state.value.snackbarMessage)
     }
 
     private fun createViewModel(
-        savedConfig: String?,
-        validator: ValidateConnectionConfigUseCase,
-    ): ConnectionViewModel {
-        return ConnectionViewModel(
-            observeSavedConnectionConfigUseCase = ObserveSavedConnectionConfigUseCase { flowOf(savedConfig) },
-            validateConnectionConfigUseCase = validator,
-            vpnController = FakeVpnController(),
-            vpnPermissionRequester = FakeVpnPermissionRequester(),
-            reducer = ConnectionReducer(),
-        )
-    }
-
-    private class FakeValidateConnectionConfigUseCase(
-        private val result: ConfigValidationResult,
-    ) : ValidateConnectionConfigUseCase {
-        val validatedInputs = mutableListOf<String>()
-
-        override suspend fun invoke(rawConfig: String): ConfigValidationResult {
-            validatedInputs += rawConfig
-            return result
-        }
-    }
+        bundleFlow: MutableStateFlow<ActiveBundleState>,
+    ): ConnectionViewModel = ConnectionViewModel(
+        observeActiveBundleUseCase = ObserveActiveBundleUseCase { bundleFlow },
+        loadBundleUseCase = LoadBundleUseCase { },
+        selectConfigUseCase = SelectConfigUseCase { },
+        prepareConnectionConfigUseCase = PrepareConnectionConfigUseCase { ConfigValidationResult.Valid("{}") },
+        vpnController = FakeVpnController(),
+        vpnPermissionRequester = FakeVpnPermissionRequester(),
+        reducer = ConnectionReducer(),
+    )
 
     private class FakeVpnController : VpnController {
         override val status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
-        override suspend fun connect(config: ValidatedConnectionConfig): ConnectResult = ConnectResult.Started
+        override suspend fun connect(xrayJson: String): ConnectResult = ConnectResult.Started
         override suspend fun disconnect() = Unit
     }
 
@@ -107,19 +98,11 @@ internal class ConnectionViewModelTest {
         override suspend fun requestPermission(): VpnPermissionResult = VpnPermissionResult.Granted
     }
 
-    private fun sampleConfig(rawConfig: String) = ValidatedConnectionConfig(
-        rawConfig = rawConfig,
-        xrayJson = """{"outbounds":[{"protocol":"vless"}]}""",
-        summary = ConnectionConfigSummary(
-            title = "sample",
-            protocol = "vless",
-            address = "78.17.84.51",
-            port = 443,
-            security = "reality",
-            transport = "tcp",
-            sni = "www.microsoft.com",
-            outboundCount = 1,
-            isAdvanced = false,
-        ),
+    private fun sampleBundle(id: String) = ConfigBundle(
+        id = id,
+        name = "sample",
+        createdAt = 0,
+        updatedAt = 0,
+        configs = listOf(RemoteConfig(id = "c1", name = "Server", url = "vless://x")),
     )
 }

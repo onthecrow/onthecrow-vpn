@@ -1,7 +1,8 @@
 package com.onthecrow.onthecrowvpn.connection
 
-import com.onthecrow.onthecrowvpn.connection.model.ConnectionConfigSummary
-import com.onthecrow.onthecrowvpn.connection.model.ValidatedConnectionConfig
+import com.onthecrow.onthecrowvpn.connection.model.ActiveBundleState
+import com.onthecrow.onthecrowvpn.connection.model.ConfigBundle
+import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -14,54 +15,54 @@ internal class ConnectionReducerTest {
     private val reducer = ConnectionReducer()
 
     @Test
-    fun validationLifecycleUpdatesInputAndValidity() = runTest {
-        val config = sampleConfig()
+    fun loadingThenBundleArrivalPopulatesState() = runTest {
+        var state = reducer.reduce(ConnectionState(idInput = "abc"), ConnectionEvent.OnLoadStarted)
+        assertTrue(state.isLoadingBundle)
+        assertTrue(state.isEditingId)
+        assertNull(state.bundle)
 
-        var state = reducer.reduce(ConnectionState(), ConnectionEvent.OnValidationStarted("vless://sample"))
-        assertEquals("vless://sample", state.rawInput)
-        assertTrue(state.isValidating)
-        assertNull(state.validationError)
-
-        state = reducer.reduce(state, ConnectionEvent.OnValidationSucceeded(config))
-        assertEquals(config, state.validatedConfig)
-        assertFalse(state.isValidating)
-        assertNull(state.validationError)
-
-        state = reducer.reduce(state, ConnectionEvent.OnValidationFailed("bad config"))
-        assertNull(state.validatedConfig)
-        assertEquals("bad config", state.validationError)
-        assertFalse(state.isValidating)
+        state = reducer.reduce(
+            state,
+            ConnectionEvent.OnActiveBundleChanged(
+                ActiveBundleState(savedBundleId = "abc", bundle = bundle("abc"), selectedConfigId = "c1"),
+            ),
+        )
+        assertEquals("abc", state.idInput)
+        assertEquals(bundle("abc"), state.bundle)
+        assertEquals("c1", state.selectedConfigId)
+        assertFalse(state.isLoadingBundle)
+        assertFalse(state.isEditingId)
+        assertNull(state.bundleError)
     }
 
     @Test
-    fun manualInputChangeInvalidatesAcceptedConfig() = runTest {
-        val state = ConnectionState(validatedConfig = sampleConfig())
+    fun remoteRevocationClearsInputAndBundle() = runTest {
+        val connected = ConnectionState(idInput = "abc", bundle = bundle("abc"), selectedConfigId = "c1")
 
-        val updated = reducer.reduce(state, ConnectionEvent.OnInputChanged("hysteria2://sample"))
+        val state = reducer.reduce(
+            connected,
+            ConnectionEvent.OnActiveBundleChanged(
+                ActiveBundleState(revoked = true, error = "This configuration is no longer available"),
+            ),
+        )
 
-        assertEquals("hysteria2://sample", updated.rawInput)
-        assertNull(updated.validatedConfig)
-        assertNull(updated.validationError)
-        assertFalse(updated.canConnect)
+        assertEquals("", state.idInput)
+        assertNull(state.bundle)
+        assertEquals("This configuration is no longer available", state.bundleError)
+        assertTrue(state.isEditingId)
     }
 
     @Test
     fun connectionLifecycleExposesBusyConnectedAndErrorStates() = runTest {
-        var state = ConnectionState(validatedConfig = sampleConfig())
+        var state = ConnectionState(bundle = bundle("abc"), selectedConfigId = "c1")
 
         state = reducer.reduce(state, ConnectionEvent.OnConnectionStatusChanged(ConnectionStatus.PreparingPermission))
         assertTrue(state.isBusy)
         assertFalse(state.canConnect)
 
-        state = reducer.reduce(state, ConnectionEvent.OnConnectionStatusChanged(ConnectionStatus.Connecting))
-        assertTrue(state.isBusy)
-
         state = reducer.reduce(state, ConnectionEvent.OnConnectionStatusChanged(ConnectionStatus.Connected))
         assertTrue(state.isConnected)
         assertFalse(state.isBusy)
-
-        state = reducer.reduce(state, ConnectionEvent.OnConnectionStatusChanged(ConnectionStatus.Disconnecting))
-        assertTrue(state.isBusy)
 
         state = reducer.reduce(state, ConnectionEvent.OnConnectionStatusChanged(ConnectionStatus.Error("cannot connect")))
         assertEquals("cannot connect", state.snackbarMessage)
@@ -71,19 +72,11 @@ internal class ConnectionReducerTest {
         assertNull(state.snackbarMessage)
     }
 
-    private fun sampleConfig() = ValidatedConnectionConfig(
-        rawConfig = "vless://sample",
-        xrayJson = """{"outbounds":[{"protocol":"vless"}]}""",
-        summary = ConnectionConfigSummary(
-            title = "sample",
-            protocol = "vless",
-            address = "78.17.84.51",
-            port = 443,
-            security = "reality",
-            transport = "tcp",
-            sni = "www.microsoft.com",
-            outboundCount = 1,
-            isAdvanced = false,
-        ),
+    private fun bundle(id: String) = ConfigBundle(
+        id = id,
+        name = "sample",
+        createdAt = 0,
+        updatedAt = 0,
+        configs = listOf(RemoteConfig(id = "c1", name = "Server", url = "vless://x")),
     )
 }

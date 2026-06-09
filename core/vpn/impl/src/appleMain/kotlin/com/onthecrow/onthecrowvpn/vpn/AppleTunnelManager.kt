@@ -98,6 +98,23 @@ class AppleTunnelManager(
         return true
     }
 
+    /**
+     * Stop the tunnel AND remove the system profile from preferences, so it disappears from System
+     * Settings entirely (used when the bundle is revoked remotely). Returns true if a profile existed.
+     */
+    suspend fun removeProfile(): Boolean = suspendCancellableCoroutine { cont ->
+        val mgr = manager
+        if (mgr == null) {
+            cont.resume(false)
+            return@suspendCancellableCoroutine
+        }
+        mgr.connection.stopVPNTunnel()
+        mgr.removeFromPreferencesWithCompletionHandler {
+            manager = null
+            cont.resume(true)
+        }
+    }
+
     /** Read the failure reason the extension wrote to the shared App Group store, if any. */
     fun readSharedError(): String? =
         NSUserDefaults(suiteName = appGroupId).stringForKey(ERROR_KEY)?.takeIf { it.isNotBlank() }

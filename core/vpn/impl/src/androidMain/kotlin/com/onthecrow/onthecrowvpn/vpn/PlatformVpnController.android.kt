@@ -27,13 +27,16 @@ actual class PlatformVpnController : VpnController {
         }
     }
 
-    override suspend fun disconnect() {
+    override suspend fun disconnect() = sendStop(OnthecrowVpnService.ACTION_DISCONNECT)
+
+    override suspend fun revoke() = sendStop(OnthecrowVpnService.ACTION_REVOKE)
+
+    private fun sendStop(action: String) {
         runCatching {
             val context = AndroidVpnEnvironment.applicationContext
             AndroidVpnRuntime.status.value = ConnectionStatus.Disconnecting
             context.startService(
-                Intent(context, OnthecrowVpnService::class.java)
-                    .setAction(OnthecrowVpnService.ACTION_DISCONNECT)
+                Intent(context, OnthecrowVpnService::class.java).setAction(action)
             )
         }.onFailure { error ->
             AndroidVpnRuntime.status.value = ConnectionStatus.Error(

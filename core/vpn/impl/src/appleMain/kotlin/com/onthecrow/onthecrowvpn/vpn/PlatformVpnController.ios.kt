@@ -112,6 +112,13 @@ actual class PlatformVpnController : VpnController {
         }
     }
 
+    override suspend fun revoke() {
+        // Remote revocation: stop and remove the system profile so it vanishes from Settings.
+        pendingConnect = false
+        tunnel.removeProfile()
+        mutableStatus.value = ConnectionStatus.Disconnected
+    }
+
     private fun mapStatus(status: NEVPNStatus): ConnectionStatus = when (status) {
         NEVPNStatusConnected -> ConnectionStatus.Connected
         NEVPNStatusConnecting, NEVPNStatusReasserting -> ConnectionStatus.Connecting
