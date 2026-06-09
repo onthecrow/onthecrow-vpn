@@ -18,13 +18,17 @@ internal data class FirebaseDesktopConfig(
  *
  * Lookup chain (first hit wins):
  *   1. `-Dfirebase.config=/abs/path/to/firebase-admin.properties` (JVM system property)
- *   2. `./firebase-admin.properties` (current working directory)
- *   3. `./desktopApp/firebase-admin.properties` (repo root)
+ *   2. `<compose.application.resources.dir>/firebase-admin.properties` (packaged/installed app)
+ *   3. `./firebase-admin.properties` (current working directory)
+ *   4. `./desktopApp/firebase-admin.properties` (repo root, dev run)
  */
 internal object JvmFirebaseConfig {
     fun load(): FirebaseDesktopConfig? {
         val candidates = buildList {
             System.getProperty("firebase.config")?.takeIf { it.isNotBlank() }?.let { add(File(it)) }
+            // Bundled into the packaged app via appResourcesRootDir (so an installed copy works offline of the repo).
+            System.getProperty("compose.application.resources.dir")?.takeIf { it.isNotBlank() }
+                ?.let { add(File(it, "firebase-admin.properties")) }
             add(File("firebase-admin.properties"))
             add(File("desktopApp/firebase-admin.properties"))
         }
