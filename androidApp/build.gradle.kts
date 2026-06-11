@@ -64,8 +64,14 @@ android {
             versionNameSuffix = "-dev"
         }
         getByName("release") {
-            isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            // Enables code-related app optimization.
+            isMinifyEnabled = true
+            // Enables resource shrinking.
+            isShrinkResources = true
+            proguardFiles(
+                // Default file with automatically generated optimization rules.
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+            )
         }
     }
     compileOptions {
