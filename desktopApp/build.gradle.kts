@@ -38,6 +38,17 @@ compose.desktop {
             // exposed via System.getProperty("compose.application.resources.dir").
             appResourcesRootDir.set(layout.projectDirectory.dir("resources"))
 
+            macOS {
+                // Must equal the App ID the Developer ID provisioning profiles are issued for, so the
+                // embedded NE system extension (child id `…SystemExtension`) and the bridge sign cleanly.
+                // NOTE: we deliberately do NOT enable Compose's built-in signing here — the production
+                // build is signed/notarized by scripts/package-macos-app.sh, which also embeds the
+                // system extension + bridge (each with their own entitlements/profile). See
+                // macosApp/README.md §5.
+                bundleID = "com.onthecrow.onthecrowvpn"
+                iconFile.set(project.file("icons/OnthecrowVPN.icns"))
+            }
+
             windows {
                 // Create Start-menu + desktop shortcuts so it installs like a normal app, and let the
                 // user pick the install location. The fixed upgradeUuid lets future versions upgrade in
@@ -47,6 +58,11 @@ compose.desktop {
                 shortcut = true
                 dirChooser = true
                 upgradeUuid = "a69d5b2a-21d4-4d80-a7ff-0ecd70ec5125"
+                iconFile.set(project.file("icons/OnthecrowVPN.ico"))
+            }
+
+            linux {
+                iconFile.set(project.file("icons/OnthecrowVPN.png"))
             }
         }
     }

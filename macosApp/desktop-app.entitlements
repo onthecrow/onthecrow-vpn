@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements for the JVM launcher (Contents/MacOS/OnthecrowVPN) and the outer OnthecrowVPN.app
+      when deep-signing for notarization (scripts/package-macos-app.sh).
+
+      The JIT trio is required for the bundled JRE to run under the hardened runtime (HotSpot JITs
+      code and loads many dylibs / JNI libs). The app group lets the app side read the tunnel's
+      failure reason the extension publishes. The launcher does NOT request NetworkExtension or
+      system-extension.install — only the embedded bridge (macos-bridge.entitlements) does, since the
+      bridge is the process that calls OSSystemExtensionRequest / NETunnelProviderManager.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.application-groups</key>
+    <array>
+        <string>group.com.onthecrow.onthecrowvpn</string>
+    </array>
+</dict>
+</plist>

@@ -25,47 +25,52 @@ several hard macOS facts we discovered the hard way:
 | The system **pins a provider to the activating app's code-signing "designated requirement"** (`Cannot create agent … missing designated requirement`). | The **same `.app`** must both **activate** and **manage** the system extension. |
 | iOS-app-on-Mac (Designed for iPad / Mac Catalyst) **cannot run a packet-tunnel provider**. | Not an option. |
 
-The resulting design (**"service .app" model**): the JVM Compose app stays the UI and spawns a tiny,
-**provisioned** native helper app — `OnthecrowVpnService.app` — which both installs and drives the
-system extension. The JVM app itself needs **no entitlements and no signing**; all the privileged
-work is isolated in the service app (a crash in the tunnel can't take down the UI).
+The resulting **production** design is a **single, notarized `OnthecrowVPN.app`** (Developer ID): the
+Compose Desktop JVM UI bundle **embeds** the system extension (`Contents/Library/SystemExtensions/`) and
+a tiny native bridge (`Contents/Helpers/`); the whole bundle is deep-signed Developer ID and notarized,
+so it activates the system extension with **SIP enabled** — the user just approves it once in System
+Settings — and can be zipped/DMG'd and sent to anyone. The JVM UI spawns the embedded bridge over stdio;
+the bridge both **activates** and **manages** the system extension, and because both live in the same
+signed bundle the OS's designated-requirement pin is satisfied.
+
+> For fast local iteration there's also a **SIP-off dev loop** that builds a standalone
+> `OnthecrowVpnService.app` instead of notarizing — see §5's *Fast dev loop* subsection. The
+> distributable single-bundle path below is the default.
 
 ---
 
 ## 2. Architecture (high level)
 
+Everything lives inside **one** Developer-ID-signed, notarized `OnthecrowVPN.app`:
+
 ```
-┌──────────────────────────┐   the UI process is unsigned/dev — it only launches a child process
-│  Compose Desktop (JVM)    │   and talks to it over stdio (JSON lines).
-│  desktopApp + composeApp  │
-└────────────┬─────────────┘
-             │  VpnController (commonMain)
-             ▼
-   PlatformVpnController.jvm.kt   ── macOS branch ──►  MacosNeController.kt
-             │                                              │ ProcessBuilder + stdin/stdout (JSON)
-             ▼                                              ▼
-   /Applications/OnthecrowVpnService.app                (provisioned: Developer ID + embedded profile)
-     Contents/MacOS/onthecrow-macos-bridge   ◄── Kotlin/Native executable (core/vpn/macos-bridge)
-        • OSSystemExtensionRequest  → activate the system extension (one-time)
-        • NETunnelProviderManager   → create/save the VPN profile, start/stop, observe NEVPNStatus
-        • App Group store           → read the tunnel's failure reason
-             │  the OS launches the provider process on startVPNTunnel
-             ▼
-     Contents/Library/SystemExtensions/com.onthecrow.onthecrowvpn.SystemExtension.systemextension
-        • PacketTunnelProvider.swift  ── ~15-line Swift principal class (required; see §4) ──┐
-        • OnthecrowTunnelCore (Kotlin/Native, SHARED WITH iOS)  ◄─────────────────────────────┘
-             • NEPacketTunnelNetworkSettings (10.77.0.2/32, default route, DNS, MTU 1500)
-             • finds the utun fd (getsockopt scan) → LibXraySetTunFd
-             • LibXrayRunXrayFromJSON(config)
-             ▼
-        libXray (xray-core, gomobile) → hysteria2/vless transport → server → internet
-             ▲
-        utun5 (NEVirtualInterface) ── packets routed here by the OS (default route)
+OnthecrowVPN.app  (Developer ID + notarized; CFBundleIdentifier com.onthecrow.onthecrowvpn)
+└─ Contents/
+   ├─ MacOS/OnthecrowVPN              ◄── Compose Desktop (JVM) UI + bundled JRE
+   │     │  VpnController (commonMain) → PlatformVpnController.jvm.kt (macOS branch) → MacosNeController.kt
+   │     ▼  ProcessBuilder + stdin/stdout (JSON lines)
+   ├─ Helpers/onthecrow-macos-bridge  ◄── Kotlin/Native executable (core/vpn/macos-bridge)
+   │     • OSSystemExtensionRequest  → activate the system extension (one-time, user approves in Settings)
+   │     • NETunnelProviderManager   → create/save the VPN profile, start/stop, observe NEVPNStatus
+   │     • App Group store           → read the tunnel's failure reason
+   │     │  the OS launches the provider process on startVPNTunnel
+   │     ▼
+   ├─ Library/SystemExtensions/com.onthecrow.onthecrowvpn.SystemExtension.systemextension
+   │     • PacketTunnelProvider.swift  ── ~15-line Swift principal class (required; see §4) ──┐
+   │     • OnthecrowTunnelCore (Kotlin/Native, SHARED WITH iOS)  ◄────────────────────────────┘
+   │          • NEPacketTunnelNetworkSettings (10.77.0.2/32, default route, DNS, MTU 1500)
+   │          • finds the utun fd (getsockopt scan) → LibXraySetTunFd → LibXrayRunXrayFromJSON(config)
+   │          ▼  libXray (xray-core) → hysteria2/vless → server → internet  (utun ◄ default route)
+   └─ embedded.provisionprofile       ◄── Onthecrow Host DevID (authorizes the NE entitlement, SIP on)
 ```
 
-**One-liner:** Compose (JVM) → spawns the **service .app** → its Kotlin/Native **bridge** drives
-`NETunnelProviderManager` → the OS runs the **system extension** → our shared **`OnthecrowTunnelCore`**
-hands the utun fd to **libXray (xray-core)** → traffic.
+Because the bridge's enclosing main bundle is `OnthecrowVPN.app`, `OSSystemExtensionRequest` is
+attributed to it and the OS finds the sysext in the same bundle — the **same app** activates and manages
+the provider (designated-requirement pin satisfied), with no separate install.
+
+**One-liner:** Compose (JVM) → spawns the embedded **bridge** → it drives `NETunnelProviderManager` →
+the OS runs the embedded **system extension** → our shared **`OnthecrowTunnelCore`** hands the utun fd to
+**libXray (xray-core)** → traffic.
 
 ---
 
@@ -89,16 +94,16 @@ hands the utun fd to **libXray (xray-core)** → traffic.
 |---|---|---|
 | JVM macOS controller | `core/vpn/impl/src/jvmMain/.../MacosNeController.kt` | Spawns the service-app bridge, streams commands (`connect`/`disconnect`) and parses JSON status back into `ConnectionStatus`. |
 | JVM platform controller | `core/vpn/impl/src/jvmMain/.../PlatformVpnController.jvm.kt` | Routes macOS → `MacosNeController` (Windows keeps the osascript/Wintun sidecar). |
-| Bridge resolver / helpers | `core/vpn/impl/src/jvmMain/.../DesktopVpnSupport.kt` | `resolveBridge()` points at `/Applications/OnthecrowVpnService.app/.../onthecrow-macos-bridge`. |
+| Bridge resolver / helpers | `core/vpn/impl/src/jvmMain/.../DesktopVpnSupport.kt` | `resolveBridge()` finds the bridge embedded in the running bundle (`Contents/Helpers/onthecrow-macos-bridge`), with dev fallbacks. |
 | **NE bridge** (KN executable) | `core/vpn/macos-bridge/` (entry `.../macosbridge/Main.kt`) | `OSSystemExtensionRequest` + `NETunnelProviderManager` driven over a line-based stdio JSON protocol; runs an `NSRunLoop`. |
 | **Shared NE management** | `core/vpn/impl/src/appleMain/.../AppleTunnelManager.kt` | The `NETunnelProviderManager` create/save/start/stop/status logic shared by **iOS** (`PlatformVpnController.ios.kt`) and the macOS bridge. |
 | **System-extension tunnel core** | `core/vpn/ios-tunnel/src/appleMain/.../OnthecrowTunnelCore.kt` | Reused verbatim from iOS: network settings, utun-fd scan, `LibXraySetTunFd` + `LibXrayRunXrayFromJSON`, App-Group error reporting. |
 | Swift principal class | `macosApp/OnthecrowSysextHost/SystemExtension/PacketTunnelProvider.swift` | ~15 lines; forwards `start/stopTunnel` to `OnthecrowTunnelCore`. |
 | Config sanitizer | `core/xray/src/commonMain/.../XrayConfigSanitizer.kt` | Injects the tun inbound, strips non-IP `sendThrough`, sets log level/error path. |
 | Xcode sysext project | `macosApp/OnthecrowSysextHost/` | Builds the `.systemextension` (+ a throwaway host used during bring-up). |
-| Service-app builder | `scripts/build-macos-service-app.sh` | Assembles `OnthecrowVpnService.app` (embeds the bridge + sysext + provisioning profile) and code-signs it. |
-| Dev test harness | `scripts/dev-test-macos-bridge.sh` | Converts a share link and drives the signed bridge directly (no UI). |
-| Entitlements (reference) | `macosApp/SystemExtension.entitlements`, `macosApp/app.entitlements`, `macosApp/macos-bridge.entitlements` | Canonical entitlement sets for the sysext / host app / bridge. |
+| **Production packager** | `scripts/package-macos-app.sh` | Builds the sysext + bridge + jpackage app, **embeds** them into one bundle, deep-signs Developer ID, **notarizes**, staples. The one command for distribution. |
+| Entitlements | `macosApp/desktop-app.entitlements` (JVM launcher/outer app: JIT trio + app group), `macosApp/macos-bridge.entitlements` (bridge: NE + system-extension.install + app group), `macosApp/OnthecrowSysextHost/SystemExtension/SystemExtension.entitlements` (sysext: NE + app group + network.client/server) | The three entitlement sets the packager applies per component. |
+| Dev-loop scripts (SIP-off) | `scripts/build-macos-service-app.sh`, `scripts/dev-test-macos-bridge.sh` | Fast local iteration **without** notarization: build a standalone `OnthecrowVpnService.app` and drive the bridge directly. See §5 *Fast dev loop*. |
 
 ### Why a Swift principal class (the only Swift)
 NetworkExtension resolves the provider class via `NSClassFromString` **at extension-process launch,
@@ -109,105 +114,119 @@ pattern. Everything else is Kotlin.
 
 ---
 
-## 5. Build & run (from scratch)
+## 5. Build & run — production single notarized `.app`
 
-Prerequisites: **Apple Silicon Mac**, **Xcode**, a **paid Apple Developer account**, and a
-**Developer ID Application** certificate.
+The end product is **one** `OnthecrowVPN.app`: Developer-ID signed, notarized, runs with **SIP enabled**,
+and can be sent to anyone (App Store is not an option — VPN apps require an *organization* account,
+Guideline 5.4). `scripts/package-macos-app.sh` does the whole build/embed/sign/notarize/staple.
+
+Prerequisites: **Apple Silicon Mac**, **Xcode**, a **paid Apple Developer account**, a **Developer ID
+Application** certificate, and a **JDK** (for jpackage, comes with the Gradle toolchain).
 
 ### 5.1 Identifiers (keep consistent everywhere)
 
 | Thing | Value |
 |---|---|
-| App / service bundle id | `com.onthecrow.onthecrowvpn` |
+| App bundle id | `com.onthecrow.onthecrowvpn` (pinned in `desktopApp/build.gradle.kts` → `macOS { bundleID }`) |
 | System extension bundle id | `com.onthecrow.onthecrowvpn.SystemExtension` (must be a **child** of the app id) |
 | App Group | `group.com.onthecrow.onthecrowvpn` |
 | Team | `Q468Q9633Q` |
 
-### 5.2 Build libXray (xcframework)
+### 5.2 Build libXray + desktop sidecar
 
 ```bash
-scripts/build-libxray-apple.sh        # → libs/LibXray/LibXray.xcframework (incl. macos-arm64_x86_64)
+scripts/build-libxray-apple.sh                 # → libs/LibXray/LibXray.xcframework (macos slice; for the sysext + bridge)
+TARGETS=macos-arm64 scripts/build-libxray-desktop.sh   # → local-libs/libxray-desktop/macos-arm64/onthecrow-xray (bundled by jpackage)
 ```
 
-### 5.3 Apple Developer portal (one-time)
+### 5.3 Apple Developer portal + notary credentials (one-time)
 
 1. **Certificate**: Xcode → Settings → Accounts → *Manage Certificates* → **+** → **Developer ID
-   Application**.
+   Application** (lands in the login keychain).
 2. **App Group**: create `group.com.onthecrow.onthecrowvpn`.
 3. **App IDs** (Identifiers):
-   - `com.onthecrow.onthecrowvpn` — enable **App Groups** (assign the group).
+   - `com.onthecrow.onthecrowvpn` — enable **App Groups**, **Network Extensions**, **System Extension**
+     (the app/bridge both manages the provider *and* activates the sysext).
    - `com.onthecrow.onthecrowvpn.SystemExtension` — enable **Network Extensions** + **App Groups**.
-   > Xcode's *automatic* signing **cannot** provision the `*-systemextension` NE entitlement — this is
-   > why we use manual Developer ID profiles below.
+   > Xcode's *automatic* signing **cannot** provision the `*-systemextension` NE entitlement — hence the
+   > manual Developer ID profiles below.
 4. **Provisioning profiles** (Profiles → **+** → Distribution → **Developer ID**), download &
-   double-click each to install:
-   - `Onthecrow Host DevID` → App ID `com.onthecrow.onthecrowvpn`.
+   double-click each to install (the packager auto-discovers them by name):
+   - `Onthecrow Host DevID` → App ID `com.onthecrow.onthecrowvpn` (Network Extensions + System Extension + App Groups).
    - `Onthecrow Sysext DevID` → App ID `com.onthecrow.onthecrowvpn.SystemExtension`.
+5. **notarytool credentials** (one-time, stored in the keychain):
+   ```bash
+   xcrun notarytool store-credentials onthecrow \
+     --apple-id you@example.com --team-id Q468Q9633Q --password <app-specific-password>
+   ```
+   (Create the app-specific password at appleid.apple.com.)
 
-### 5.4 Build the system extension (Xcode)
+### 5.4 Build the system extension target (Xcode, one-time setup)
 
 Open `macosApp/OnthecrowSysextHost`. The **SystemExtension** target is configured with:
-
 - **Info.plist** → `NetworkExtension` → `NEProviderClasses` → `com.apple.networkextension.packet-tunnel`
   = `$(PRODUCT_MODULE_NAME).PacketTunnelProvider`.
 - **Entitlements** (`SystemExtension/SystemExtension.entitlements`):
-  `com.apple.developer.networking.networkextension = [packet-tunnel-provider-systemextension]`,
-  `com.apple.security.application-groups = [group.com.onthecrow.onthecrowvpn]`,
+  `networkextension = [packet-tunnel-provider-systemextension]`, the app group, and
   **`com.apple.security.network.client` + `network.server`** (App Sandbox is on — without `network.client`
   xray *starts* but can't open the outbound socket → "connected, no traffic").
-- Linked (Do Not Embed — both are **static**): `OnthecrowTunnel.framework` (built by
-  `./gradlew :core:vpn:ios-tunnel:linkDebugFrameworkMacosArm64`) + `libs/LibXray/LibXray.xcframework`.
-- `OTHER_LDFLAGS = -ObjC -lc++`, `ENABLE_USER_SCRIPT_SANDBOXING = NO`, a Run Script that rebuilds the
-  KN framework.
+- Linked (Do Not Embed — both **static**): `OnthecrowTunnel.framework`
+  (`./gradlew :core:vpn:ios-tunnel:linkReleaseFrameworkMacosArm64`) + `libs/LibXray/LibXray.xcframework`.
+- `OTHER_LDFLAGS = -ObjC -lc++`, `ENABLE_USER_SCRIPT_SANDBOXING = NO`, manual **Developer ID** signing
+  with `Onthecrow Sysext DevID`.
 
-Set both the host and the extension to **manual signing** → **Developer ID Application** +
-the matching profiles, then **Product → Build** (⌘B). The signed `.systemextension` ends up in
-`~/Library/Developer/Xcode/DerivedData/.../Build/Products/Debug/OnthecrowSysextHost.app`.
+The packager builds this target for you via `xcodebuild -scheme SystemExtension`; you don't need to
+press ⌘B yourself once the target is set up.
 
-### 5.5 Build the NE bridge (Kotlin/Native)
+### 5.5 Build + sign + notarize — one command
 
 ```bash
-./gradlew :core:vpn:macos-bridge:linkReleaseExecutableMacosArm64
+ONTHECROW_NOTARY_PROFILE=onthecrow scripts/package-macos-app.sh
+```
+This: builds the `.systemextension` (xcodebuild) + the KN bridge + the jpackage app, **embeds** the
+sysext into `Contents/Library/SystemExtensions/` and the bridge into `Contents/Helpers/`, embeds the
+provisioning profiles, **deep-signs** every component inside-out (Developer ID + hardened runtime), then
+**notarizes** and **staples**. Result: `desktopApp/build/compose/binaries/main/app/OnthecrowVPN.app`.
+
+Useful flags (env):
+- `SKIP_NOTARIZE=1` — sign only (fast; produces a signed-but-not-notarized app for local signature checks).
+- `MAKE_DMG=1` — also build, notarize and staple a DMG around the app.
+- `ONTHECROW_SIGN_IDENTITY` / `ONTHECROW_HOST_PROFILE` / `ONTHECROW_SYSEXT_PROFILE` / `ONTHECROW_SYSEXT_SRC`
+  — overrides if auto-discovery doesn't fit your setup.
+
+### 5.6 First run (on any Mac, **SIP enabled**)
+
+Launch `OnthecrowVPN.app` → enter your subscription id → pick a config → **Connect**. The first time,
+macOS asks to approve the extension in **System Settings → General → Login Items & Extensions** —
+approve once. The tunnel comes up; the profile appears under **System Settings → VPN**, and the button
+reflects the real `NEVPNStatus`. No SIP change, no Terminal.
+
+### 5.7 Distribution
+
+Ship the stapled `OnthecrowVPN.app` (zip it, or `MAKE_DMG=1` for a DMG). Because it's notarized +
+stapled, Gatekeeper accepts it offline on other Macs. Verify before shipping:
+```bash
+spctl -a -vvv -t exec OnthecrowVPN.app        # → accepted, source=Notarized Developer ID
+xcrun stapler validate OnthecrowVPN.app       # → validated
+codesign --verify --deep --strict --verbose=2 OnthecrowVPN.app
 ```
 
-### 5.6 Assemble + sign the service app
+### 5.8 Fast dev loop (optional, **SIP off**)
 
+For quick iteration without notarizing the whole bundle each time, use the standalone service app +
+direct bridge driver (this is the *only* path that needs SIP changes):
 ```bash
-# auto-finds the "Onthecrow Host DevID" profile and the just-built .systemextension
+csrutil disable                  # from Recovery, once
+systemextensionsctl developer on # allows an un-notarized, Developer-ID-signed sysext to run
+./gradlew :core:vpn:macos-bridge:linkReleaseExecutableMacosArm64
 SYSEXT_APP=$(find ~/Library/Developer/Xcode/DerivedData -path "*Build/Products/*/OnthecrowSysextHost.app" | head -1)
 ONTHECROW_SYSEXT_SRC="$SYSEXT_APP/Contents/Library/SystemExtensions" scripts/build-macos-service-app.sh
+cp -R build/macos/OnthecrowVpnService.app /Applications/
+{ printf 'activate\n'; cat; } | /Applications/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge  # approve; Ctrl-C
+scripts/dev-test-macos-bridge.sh 'vless://…'   # drive a tunnel without the UI
 ```
-This produces `build/macos/OnthecrowVpnService.app` (faceless `LSUIElement`, bundle id
-`com.onthecrow.onthecrowvpn`) that **embeds** the bridge + the sysext + the provisioning profile and
-is signed Developer ID. (Override the signing identity via `ONTHECROW_SIGN_IDENTITY` if needed.)
-
-### 5.7 Install + activate (one-time)
-
-```bash
-cp -R build/macos/OnthecrowVpnService.app /Applications/        # activation requires /Applications
-{ printf 'activate\n'; cat; } | /Applications/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge
-# → approve in System Settings → General → Login Items & Extensions; wait for [activated enabled]; Ctrl-C
-```
-
-### 5.8 Run the UI
-
-```bash
-./gradlew :desktopApp:run     # enter your subscription id → pick a config → Connect
-```
-The button reflects the real `NEVPNStatus`; the profile appears under **System Settings → VPN**.
-
-### 5.9 Local dev signing — two options
-
-- **Developer ID + notarization** (no SIP change): the proper path; notarize the service app for
-  distribution (`xcrun notarytool`).
-- **SIP off + developer mode** (fast local iteration): `csrutil disable` from Recovery, then
-  `systemextensionsctl developer on` — lets an unnotarized, Apple-Development-signed extension run.
-
-### 5.10 Distribution (outline)
-
-Notarize `OnthecrowVpnService.app` (Developer ID + `notarytool` + staple), bundle it into the desktop
-distributable, and have the app install it to `/Applications` + run the one-time activation on first
-launch. (Automating §5.5–5.7 in the desktop packaging is the remaining productionization step.)
+`DesktopVpnSupport.resolveBridge()` falls back to this dev service app when not running from the packaged
+bundle, so `./gradlew :desktopApp:run` also works in this mode.
 
 ---
 
@@ -218,14 +237,25 @@ Everything we leaned on during bring-up, in one place.
 **System-extension state**
 ```bash
 systemextensionsctl list | grep onthecrow          # [activated enabled] = good
-systemextensionsctl developer on                   # dev mode (needs SIP off)
+systemextensionsctl developer on                   # ONLY for the §5.8 dev loop (needs SIP off)
 # stale "[terminated waiting to uninstall on reboot]" piles up across rebuilds → reboot to clear
+```
+
+**Notarization / Gatekeeper (production bundle)**
+```bash
+APP=desktopApp/build/compose/binaries/main/app/OnthecrowVPN.app
+spctl -a -vvv -t exec "$APP"          # accepted, source=Notarized Developer ID
+xcrun stapler validate "$APP"         # The ticket has been validated
+codesign --verify --deep --strict --verbose=2 "$APP"
+# why notarization failed, if it did:  xcrun notarytool log <submission-id> --keychain-profile onthecrow
 ```
 
 **Code signature / entitlements / provisioning**
 ```bash
-codesign -dv --entitlements - /Applications/OnthecrowVpnService.app
-codesign --verify --verbose=2 /Applications/OnthecrowVpnService.app   # "satisfies its Designated Requirement"
+APP=desktopApp/build/compose/binaries/main/app/OnthecrowVPN.app
+codesign -dv --entitlements - "$APP/Contents/Helpers/onthecrow-macos-bridge"   # NE + system-extension.install + app-group
+codesign -dv --entitlements - "$APP/Contents/Library/SystemExtensions/"*.systemextension
+codesign --verify --verbose=2 "$APP"   # "satisfies its Designated Requirement"
 security find-identity -v -p codesigning | grep "Developer ID Application"
 # decode a profile:
 security cms -D -i some.provisionprofile | plutil -convert xml1 -o - -

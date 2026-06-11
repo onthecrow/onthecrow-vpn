@@ -14,7 +14,7 @@ The desktop `VpnController` actual is `PlatformVpnController.jvm.kt`
 
 | Host | How the VPN runs |
 |---|---|
-| **macOS** | A real **NetworkExtension system VPN** (registered in System Settings). The JVM app spawns the provisioned **`OnthecrowVpnService.app`** and talks to it over stdio via `MacosNeController`. **The JVM process itself needs no signing/entitlements.** See **[`../macosApp/README.md`](../macosApp/README.md)** for the full architecture, build & signing, and debugging. |
+| **macOS** | A real **NetworkExtension system VPN** (registered in System Settings). The **system extension + native bridge are embedded inside the one notarized `OnthecrowVPN.app`**; the JVM UI spawns the embedded bridge (`Contents/Helpers/`) over stdio via `MacosNeController`. Built/signed/notarized by `scripts/package-macos-app.sh`. See **[`../macosApp/README.md`](../macosApp/README.md)** for the full architecture, build & signing, and debugging. |
 | **Windows** | Elevated **PowerShell + Wintun** sidecar (`vpn-windows.ps1`) running the libXray desktop binary; UAC prompt on connect. |
 | Linux / other | Reports `VPN is not supported on this OS yet`. |
 
@@ -25,9 +25,9 @@ inbound is injected and the config sanitized (`XrayConfigSanitizer`), then hande
 ## Build & run
 
 ```bash
-./gradlew :desktopApp:run                 # launch the app
-./gradlew :desktopApp:createDistributable # build the app image
-./gradlew :desktopApp:packageDmg          # (macOS) DMG
+./gradlew :desktopApp:run                 # launch the app (dev)
+./gradlew :desktopApp:createDistributable # build the (unsigned) app image
+scripts/package-macos-app.sh              # (macOS) build + embed sysext/bridge + sign + notarize → one .app
 ```
 
 ### Prerequisites
@@ -35,9 +35,10 @@ inbound is injected and the config sanitized (`XrayConfigSanitizer`), then hande
 - **Firebase (Firestore)** — loading configs by subscription id needs the desktop Firebase
   properties. See the firebase module's properties template + `.gitignore`’d local config
   (`core/firebase`, `JvmFirebaseConfig`). Without it the UI still launches but can't load bundles.
-- **macOS VPN** — the `OnthecrowVpnService.app` must be built, signed and installed in `/Applications`,
-  and the system extension activated once. **Follow [`../macosApp/README.md`](../macosApp/README.md)**
-  (§5 Build & run). After that, `:desktopApp:run` → enter id → **Connect** drives the system VPN.
+- **macOS VPN** — the production build is one notarized `OnthecrowVPN.app` with the system extension +
+  bridge embedded, produced by `scripts/package-macos-app.sh` (Developer ID + `notarytool`; runs with
+  **SIP enabled**). **Follow [`../macosApp/README.md`](../macosApp/README.md) §5.** A `:desktopApp:run`
+  dev session falls back to the SIP-off dev service app (§5.8).
 - **Windows VPN** — build the libXray desktop sidecar into `local-libs/libxray-desktop/` and provide
   `wintun.dll` (see `scripts/build-libxray-desktop.sh` and `DesktopVpnSupport`).
 
@@ -47,6 +48,7 @@ inbound is injected and the config sanitized (`XrayConfigSanitizer`), then hande
 and wrapper scripts into `desktopApp/resources/<os-arch>/`, exposed at runtime via
 `System.getProperty("compose.application.resources.dir")` and resolved by `DesktopVpnSupport`.
 
-> On macOS the production packaging should also embed/install `OnthecrowVpnService.app` and run the
-> one-time system-extension activation on first launch — that automation is the remaining
-> productionization step (today the service app is built/installed manually per `macosApp/README.md`).
+> macOS distribution is fully automated by `scripts/package-macos-app.sh`: it embeds the system
+> extension + bridge into the jpackage `OnthecrowVPN.app`, deep-signs Developer ID, notarizes and
+> staples — a single double-clickable bundle that activates the extension with SIP on (one-time approval
+> in System Settings). No separate `/Applications` service app.

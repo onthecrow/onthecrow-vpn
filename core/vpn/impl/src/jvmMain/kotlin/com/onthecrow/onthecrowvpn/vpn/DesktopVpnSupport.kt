@@ -60,20 +60,39 @@ internal object DesktopVpnSupport {
     )
 
     /**
-     * Resolves the native macOS NE bridge executable. It MUST be the one *inside the provisioned
-     * service .app* (OnthecrowVpnService.app): the embedded provisioning profile authorizes the
-     * restricted NetworkExtension entitlement, and the system pins the provider to the activating
-     * app's designated requirement. A bare Kotlin/Native binary is AMFI-killed ("no matching
-     * profile"), so we never use it.
+     * Resolves the native macOS NE bridge executable.
+     *
+     * Production: the bridge is embedded in the *running* app bundle at `Contents/Helpers/`. Its
+     * enclosing main bundle (`OnthecrowVPN.app`) is what `OSSystemExtensionRequest` is attributed to,
+     * and the system extension lives in the same bundle's `Contents/Library/SystemExtensions/`. The
+     * whole `.app` is Developer-ID signed + notarized (scripts/package-macos-app.sh) with an embedded
+     * provisioning profile, so the restricted NetworkExtension entitlement is honored **with SIP
+     * enabled** — no separate `/Applications/OnthecrowVpnService.app` install needed.
+     *
+     * Dev fallback (SIP-off loop, scripts/build-macos-service-app.sh): a service `.app` built under the
+     * repo, or the bare Kotlin/Native executable.
      */
     fun resolveBridge(): File? {
-        val installed = File("/Applications/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge")
-        if (installed.exists()) return installed
-        // Dev fallback: a service .app freshly built under the repo (scripts/build-macos-service-app.sh).
+        appBundleContents()?.let { contents ->
+            val embedded = File(contents, "Helpers/onthecrow-macos-bridge")
+            if (embedded.exists()) return embedded
+        }
         return resolve(
-            packagedName = "OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge",
-            devCandidates = listOf("build/macos/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge"),
+            packagedName = "Helpers/onthecrow-macos-bridge",
+            devCandidates = listOf(
+                "build/macos/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge",
+                "core/vpn/macos-bridge/build/bin/macosArm64/releaseExecutable/onthecrow-macos-bridge.kexe",
+            ),
         )
+    }
+
+    /**
+     * `<app>/Contents` when running from a packaged macOS `.app`. Compose exposes the resources dir as
+     * `<app>/Contents/app/resources`, so its grandparent is `Contents`. Returns null otherwise (dev run).
+     */
+    private fun appBundleContents(): File? {
+        val resDir = System.getProperty("compose.application.resources.dir") ?: return null
+        return File(resDir).parentFile?.parentFile?.takeIf { it.name == "Contents" }
     }
 
     private fun resolve(packagedName: String, devCandidates: List<String>): File? {

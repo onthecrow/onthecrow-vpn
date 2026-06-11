@@ -10,8 +10,10 @@ Per-platform deep dives (architecture, build & signing, debugging):
 - **iOS** — a NetworkExtension **packet-tunnel app extension** reusing a shared Kotlin/Native tunnel
   core — **[`iosApp/README.md`](iosApp/README.md)**.
 - **macOS** — a native NetworkExtension **system VPN** (registered in System Settings) driven from the
-  Compose Desktop UI, reusing the *same* tunnel core as iOS — **[`macosApp/README.md`](macosApp/README.md)**
-  + **[`desktopApp/README.md`](desktopApp/README.md)** (the JVM/UI side and per-OS VPN wiring).
+  Compose Desktop UI, reusing the *same* tunnel core as iOS, shipped as a **single Developer-ID-signed,
+  notarized `.app`** (system extension + bridge embedded; runs with SIP on) —
+  **[`macosApp/README.md`](macosApp/README.md)** + **[`desktopApp/README.md`](desktopApp/README.md)**
+  (the JVM/UI side and per-OS VPN wiring).
 
 The iOS and macOS tunnel core (`OnthecrowTunnelCore`) and NE management (`AppleTunnelManager`) are a
 single Kotlin/Native codebase shared via an `appleMain` source set.
