@@ -1,10 +1,20 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.androidApplication)
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
 }
+
+// Release signing pulled from the (gitignored) root local.properties so secrets stay out of VCS.
+val keystoreProperties = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val releaseStoreFile = keystoreProperties.getProperty("RELEASE_STORE_FILE")
+    ?.let { rootProject.file(it) }
+val hasReleaseSigning = releaseStoreFile?.exists() == true
 
 val hasFirebaseConfig = listOf(
     file("google-services.json"),
@@ -58,12 +68,27 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = releaseStoreFile
+                storePassword = keystoreProperties.getProperty("RELEASE_STORE_PASSWORD")
+                keyAlias = keystoreProperties.getProperty("RELEASE_KEY_ALIAS")
+                keyPassword = keystoreProperties.getProperty("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
         }
         getByName("release") {
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn("Release signing not configured (RELEASE_STORE_FILE in local.properties) — release build will be unsigned.")
+            }
             // Enables code-related app optimization.
             isMinifyEnabled = true
             // Enables resource shrinking.

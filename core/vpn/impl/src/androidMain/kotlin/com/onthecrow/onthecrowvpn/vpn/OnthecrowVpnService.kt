@@ -69,19 +69,14 @@ class OnthecrowVpnService : VpnService() {
     @Volatile
     private var underlyingSeeded = false
 
-    // elapsedRealtime when the screen last went off (0 = unknown/seen-on). Used to decide whether a
-    // wake warrants a proactive re-dial (Doze / long screen-off kills the upstream session).
-    @Volatile
-    private var screenOffAtMs = 0L
-
     private val mtu = 1500
     private val isDebuggable: Boolean
         get() = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     private var screenReceiver: BroadcastReceiver? = null
 
-    // Delayed full reconnect after a network change / Doze wake (see scheduleFullReconnect).
-    private var reconnectJob: Job? = null
+    // The single tunnel-health state machine (recover + keepalive); alive while screen-on + connected.
+    private var tunnelJob: Job? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         logd("onStartCommand action=${intent?.action} flags=$flags startId=$startId")
@@ -233,50 +228,95 @@ class OnthecrowVpnService : VpnService() {
         tunInterface = null
     }
 
-    // ---- Resilience: refresh xray (never touch routing) when the underlying network changes ----
+    // ---- Resilience: one state machine guards tunnel health while the screen is on ----
+    //
+    // Both triggers (Doze/screen wake AND physical-network change) feed ONE job. It (optionally) recovers
+    // via escalating full re-establishes verified by a real end-to-end probe, then settles into a
+    // keepalive loop that re-enters recovery on silent death — so while the screen is on the tunnel is
+    // never left dead, and we don't guess (offFor/doze) — we probe the actual tunnel. Cancelled on
+    // screen-off / disconnect (no probing in Doze — battery; the next screen-on re-checks).
 
-    /**
-     * Recover the tunnel after a physical-network change (Wi-Fi↔cell) or a Doze wake. We wait for the
-     * radio/route to settle, then [refreshUnderlyingFromSystem] (re-query the live physical network —
-     * after Doze the frozen network callback can leave [lastUnderlying] pointing at a STALE Network
-     * object) and re-dial. Coalesced: a rapid second trigger cancels and reschedules.
-     *
-     * [soft] = keep the tun interface and only restart xray (rebinding its sockets to the fresh
-     * network). EXPERIMENT (Doze): testing whether re-querying the network is enough to make the cheap
-     * soft re-dial recover, so we can avoid the heavier full teardown+establish. [soft]=false does a
-     * full re-establish (the confirmed-working path for network changes).
-     */
-    private fun scheduleReconnect(reason: String, soft: Boolean) {
+    private enum class TunnelStart {
+        /** Just connected & known healthy — go straight to keepalive (don't re-probe immediately). */
+        KEEPALIVE_ONLY,
+
+        /** Screen on / wake: probe first; recover only if the tunnel is actually dead. */
+        PROBE_FIRST,
+
+        /** Physical-network change: the old upstream socket is dead — recover straight away. */
+        FORCE_RECOVER,
+    }
+
+    private fun startTunnelJob(reason: String, start: TunnelStart) {
         if (activeXrayJson == null) return
-        reconnectJob?.cancel()
-        reconnectJob = scope.launch {
-            // Progressive verified retry: a fixed settle is a guess (sometimes the network/route isn't
-            // ready yet and the re-establish lands on dead routing). Instead, after each re-establish we
-            // wait for Android to validate the VPN network (its own probe through the tunnel — the only
-            // honest "traffic actually flows" signal, since we're excluded from our own VPN and can't
-            // probe it ourselves). If it doesn't validate, retry with a longer settle. Stop as soon as
-            // it's healthy so we never tear down a working tunnel.
-            for ((attempt, settleMs) in RECONNECT_BACKOFF_MS.withIndex()) {
-                delay(settleMs)
-                if (activeXrayJson == null) return@launch
-                refreshUnderlyingFromSystem()
-                logd("reconnect ($reason) attempt ${attempt + 1}/${RECONNECT_BACKOFF_MS.size}: soft=$soft underlying=$lastUnderlying")
-                runConnect(xrayJson = null, restart = true, forceFullReconnect = !soft)
-                if (awaitTunnelHealthy(HEALTH_WINDOW_MS)) {
-                    logd("reconnect ($reason): tunnel healthy — done")
-                    return@launch
+        tunnelJob?.cancel()
+        tunnelJob = scope.launch {
+            when (start) {
+                TunnelStart.FORCE_RECOVER -> recoverWithBackoff(reason)
+                TunnelStart.PROBE_FIRST -> {
+                    if (probeTunnel(PROBE_TIMEOUT_MS)) {
+                        logd("$reason: tunnel already healthy")
+                    } else {
+                        logd("$reason: tunnel dead on check — recovering")
+                        recoverWithBackoff(reason)
+                    }
                 }
-                logd("reconnect ($reason): not healthy in ${HEALTH_WINDOW_MS}ms — will retry")
+                TunnelStart.KEEPALIVE_ONLY -> logd("$reason: starting keepalive watch")
             }
-            logd("reconnect ($reason): retries exhausted, leaving tunnel for next event")
+            keepAliveLoop()
         }
     }
 
     /**
-     * Suspend until a real probe THROUGH the tunnel succeeds or [windowMs] elapses. We can't trust
-     * NET_CAPABILITY_VALIDATED — Android reports it optimistically/instantly for VPNs (observed: "validated
-     * after 1ms" while no traffic actually flowed). So we open a TCP socket bound to the VPN network and
-     * try to reach a public IP; success means xray's upstream is genuinely relaying.
+     * Escalating full re-establish until an end-to-end probe confirms health, or the backoff is
+     * exhausted. The first backoff entry doubles as the settle (let the radio/route commit). Each attempt
+     * re-queries the physical network ([refreshUnderlyingFromSystem]) since Doze can leave [lastUnderlying]
+     * stale. On exhaustion we DON'T give up — we fall through to keepalive, which re-triggers recovery.
+     */
+    private suspend fun recoverWithBackoff(reason: String) {
+        for ((attempt, backoffMs) in RECOVERY_BACKOFF_MS.withIndex()) {
+            delay(backoffMs)
+            if (activeXrayJson == null) return
+            refreshUnderlyingFromSystem()
+            logd("recover ($reason) attempt ${attempt + 1}/${RECOVERY_BACKOFF_MS.size}: underlying=$lastUnderlying")
+            runConnect(xrayJson = null, restart = true, forceFullReconnect = true)
+            if (awaitTunnelHealthy(HEALTH_WINDOW_MS)) {
+                logd("recover ($reason): tunnel healthy — done")
+                return
+            }
+            logd("recover ($reason) attempt ${attempt + 1}: not healthy")
+        }
+        logd("recover ($reason): backoff exhausted — keepalive keeps watching")
+    }
+
+    /**
+     * While the screen is on, probe the tunnel every [KEEPALIVE_INTERVAL_MS]; the probe doubles as a real
+     * upstream keepalive. Two consecutive failures (one blip is tolerated) re-enter recovery. Exits when
+     * the job is cancelled (screen-off / disconnect) — delay() is the cancellation point.
+     */
+    private suspend fun keepAliveLoop() {
+        var fails = 0
+        while (true) {
+            delay(KEEPALIVE_INTERVAL_MS)
+            if (activeXrayJson == null) return
+            if (probeTunnel(PROBE_TIMEOUT_MS)) {
+                fails = 0
+            } else {
+                fails++
+                logd("keepalive: probe failed ($fails/$KEEPALIVE_FAILS_BEFORE_RECOVER)")
+                if (fails >= KEEPALIVE_FAILS_BEFORE_RECOVER) {
+                    fails = 0
+                    recoverWithBackoff("keepalive")
+                }
+            }
+        }
+    }
+
+    /**
+     * Suspend until a real end-to-end probe through the tunnel succeeds ([probeTunnel]) or [windowMs]
+     * elapses. A healthy upstream answers in <1s; a wedged one hangs — so this distinguishes a working
+     * re-establish from a dead one without trusting NET_CAPABILITY_VALIDATED (which Android reports
+     * optimistically for VPNs — observed "validated after 1ms" while no traffic flowed).
      */
     private suspend fun awaitTunnelHealthy(windowMs: Long): Boolean {
         val start = SystemClock.elapsedRealtime()
@@ -295,16 +335,24 @@ class OnthecrowVpnService : VpnService() {
     }
 
     /**
-     * Real end-to-end health check: a plain TCP connect to a public IP. Since we no longer exclude
-     * ourselves from the VPN, our default route IS the tunnel, so this traverses it (xray relays it) —
-     * success means the upstream genuinely flows. 1.1.1.1:443 is a generic connectivity target — no DNS,
-     * not the xray server (the client stays server-agnostic).
+     * Real END-TO-END health check: connect, send a tiny HTTP request, and require a response byte back.
+     * A plain connect() is NOT enough — xray's tun stack completes the TCP handshake LOCALLY (observed:
+     * "probe OK after 2ms", impossible over a real radio), so a successful connect only proves xray's
+     * inbound is alive, not that the upstream relays. Reading a byte that can only come from 1.1.1.1
+     * proves traffic genuinely flows through the upstream. Plain HTTP on a literal IP — no DNS, not the
+     * xray server (the client stays server-agnostic); the tunnel egress hides it from carrier port-80
+     * interception.
      */
     private fun probeTunnel(timeoutMs: Int): Boolean {
         return runCatching {
             java.net.Socket().use { socket ->
-                socket.connect(java.net.InetSocketAddress("1.1.1.1", 443), timeoutMs)
-                true
+                socket.connect(java.net.InetSocketAddress("1.1.1.1", 80), timeoutMs)
+                socket.soTimeout = timeoutMs
+                socket.getOutputStream().apply {
+                    write("GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n".toByteArray())
+                    flush()
+                }
+                socket.getInputStream().read() >= 0
             }
         }.getOrElse { false }
     }
@@ -350,11 +398,13 @@ class OnthecrowVpnService : VpnService() {
         lastUnderlying = null
         registerUnderlyingNetworkCallback()
         registerScreenReceiver()
+        // We just connected & it's healthy; begin keepalive watching (screen is on at connect time).
+        startTunnelJob("connected", TunnelStart.KEEPALIVE_ONLY)
     }
 
     private fun stopMonitoring() {
-        reconnectJob?.cancel()
-        reconnectJob = null
+        tunnelJob?.cancel()
+        tunnelJob = null
         networkCallback?.let { cb -> runCatching { connectivityManager().unregisterNetworkCallback(cb) } }
         networkCallback = null
         underlyingSeeded = false
@@ -364,46 +414,32 @@ class OnthecrowVpnService : VpnService() {
         screenReceiver = null
     }
 
-    // On wake, proactively re-dial: Doze / a long screen-off kills the upstream (e.g. hysteria2's QUIC
-    // session), and xray only notices it ~30s later via its idle timeout — that's the "no internet for
-    // up to a minute after unlocking" window. Forcing a tun + xray refresh here re-dials a fresh session
-    // immediately (~1-2s). Gated so a quick screen toggle (session still alive) stays a no-op.
+    // The tunnel job lives only while the screen is on: SCREEN_ON (re)starts it (probe-first — recover if
+    // Doze/idle killed the upstream), SCREEN_OFF cancels it (no probing in Doze — battery). A quick toggle
+    // is a no-op because the first probe just passes. No offFor/doze heuristic — we check the real tunnel.
     private fun registerScreenReceiver() {
         if (screenReceiver != null) return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
                     Intent.ACTION_SCREEN_OFF -> {
-                        screenOffAtMs = SystemClock.elapsedRealtime()
-                        logd("screen off")
+                        logd("screen off — pausing tunnel watcher")
+                        tunnelJob?.cancel()
+                        tunnelJob = null
                     }
-                    Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> maybeRefreshOnWake(intent.action)
+                    Intent.ACTION_SCREEN_ON -> {
+                        logd("screen on — checking tunnel")
+                        startTunnelJob("screen on", TunnelStart.PROBE_FIRST)
+                    }
                 }
             }
         }
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
-            addAction(Intent.ACTION_USER_PRESENT)
         }
         runCatching { registerReceiver(receiver, filter) }
         screenReceiver = receiver
-    }
-
-    private fun maybeRefreshOnWake(action: String?) {
-        if (activeXrayJson == null) return
-        val offForMs = if (screenOffAtMs == 0L) 0L else SystemClock.elapsedRealtime() - screenOffAtMs
-        val wasDoze = (getSystemService(Context.POWER_SERVICE) as PowerManager).isDeviceIdleMode
-        val shouldRefresh = wasDoze || offForMs >= WAKE_REFRESH_THRESHOLD_MS
-        logd("wake ($action): offFor=${offForMs}ms doze=$wasDoze -> refresh=$shouldRefresh")
-        if (shouldRefresh) {
-            screenOffAtMs = 0L // debounce: only one refresh per off→on cycle (SCREEN_ON + USER_PRESENT)
-            // Doze needs a FULL reconnect: a soft re-dial (keep tun, restart xray) does NOT recover —
-            // the kept tun interface goes stale through Doze and only a fresh establish() restores the
-            // data path (proven: soft re-dial reported "connected" but no traffic; manual reconnect /
-            // full re-establish recovers). Network was NOT stale, so it's the tun, not the socket.
-            scheduleReconnect("wake", soft = false)
-        }
     }
 
     private fun capsLabel(network: Network): String {
@@ -480,7 +516,7 @@ class OnthecrowVpnService : VpnService() {
                     logd("underlying changed: $lastUnderlying -> $network")
                     lastUnderlying = network
                     applyUnderlyingNetworks(network)
-                    scheduleReconnect("network change", soft = false)
+                    startTunnelJob("network change", TunnelStart.FORCE_RECOVER)
                 }
             }
 
@@ -594,19 +630,20 @@ class OnthecrowVpnService : VpnService() {
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001
 
-        // Below this screen-off duration the upstream session is usually still alive, so a wake is a
-        // no-op (Doze is handled separately via isDeviceIdleMode). Tunable.
-        private const val WAKE_REFRESH_THRESHOLD_MS = 30_000L
-
-        // Progressive settle before each reconnect attempt (also the retry backoff): give the OS time
-        // to commit to the new/woken network. Each attempt that doesn't validate falls through to the
-        // next, longer wait. Tunable.
-        private val RECONNECT_BACKOFF_MS = longArrayOf(3_000L, 6_000L, 12_000L)
+        // Wait before each recovery attempt (also the inter-attempt backoff). The first entry doubles as
+        // the settle (let the radio/route commit). On exhaustion keepalive keeps watching. Tunable.
+        private val RECOVERY_BACKOFF_MS = longArrayOf(2_000L, 4_000L, 8_000L)
 
         // How long to keep probing the tunnel after a re-establish before deciding the attempt failed
-        // and retrying. Each probe blocks up to PROBE_TIMEOUT_MS. Tunable.
-        private const val HEALTH_WINDOW_MS = 6_000L
+        // and escalating. A healthy upstream answers <1s; a wedged one hangs. Each probe blocks up to
+        // PROBE_TIMEOUT_MS. Tunable.
+        private const val HEALTH_WINDOW_MS = 4_000L
         private const val PROBE_TIMEOUT_MS = 2_000
         private const val PROBE_GAP_MS = 500L
+
+        // Steady-state keepalive while the screen is on: probe this often; this many consecutive failures
+        // (one blip tolerated) re-enters recovery. The probe doubles as a real upstream keepalive. Tunable.
+        private const val KEEPALIVE_INTERVAL_MS = 10_000L
+        private const val KEEPALIVE_FAILS_BEFORE_RECOVER = 2
     }
 }

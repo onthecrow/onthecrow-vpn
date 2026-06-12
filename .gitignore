@@ -24,3 +24,6 @@ local-libs/
 **/firebase-admin.properties
 desktopApp/resources/
 libs/LibXray/
+# Signing keystores — never commit
+*.jks
+*.keystore
