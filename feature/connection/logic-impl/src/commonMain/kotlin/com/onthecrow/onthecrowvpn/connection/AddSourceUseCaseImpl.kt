@@ -77,9 +77,10 @@ internal class AddSourceUseCaseImpl(
                 AddSourceResult.Invalid("Subscription URL must start with http:// or https://")
             }
         }
+        val normalized = normalizeSubscriptionUrl(url)
         val duplicate = repository.observeSources().first()
             .filterIsInstance<ConfigSource.SubscriptionUrl>()
-            .any { it.url == url }
+            .any { normalizeSubscriptionUrl(it.url) == normalized }
         if (duplicate) return AddSourceResult.Invalid("This subscription URL is already added")
 
         return when (val fetched = fetcher.fetch(url)) {

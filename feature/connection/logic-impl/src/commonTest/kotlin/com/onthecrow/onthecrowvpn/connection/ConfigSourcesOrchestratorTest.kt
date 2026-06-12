@@ -90,6 +90,12 @@ internal class ConfigSourcesOrchestratorTest {
             selection.value = ref
         }
 
+        private val collapsed = MutableStateFlow<Set<String>>(emptySet())
+        override fun observeCollapsedGroups(): Flow<Set<String>> = collapsed
+        override suspend fun setGroupCollapsed(groupKey: String, collapsed: Boolean) {
+            this.collapsed.value = if (collapsed) this.collapsed.value + groupKey else this.collapsed.value - groupKey
+        }
+
         override suspend fun migrateLegacyIfNeeded() = Unit
     }
 
