@@ -27,3 +27,4 @@ libs/LibXray/
 # Signing keystores — never commit
 *.jks
 *.keystore
+/androidApp/release/
