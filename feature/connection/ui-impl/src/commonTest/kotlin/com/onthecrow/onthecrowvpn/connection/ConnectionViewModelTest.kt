@@ -1,13 +1,20 @@
 package com.onthecrow.onthecrowvpn.connection
 
+import com.onthecrow.onthecrowvpn.connection.domain.AddSourceResult
+import com.onthecrow.onthecrowvpn.connection.domain.AddSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigValidationResult
-import com.onthecrow.onthecrowvpn.connection.domain.LoadBundleUseCase
-import com.onthecrow.onthecrowvpn.connection.domain.ObserveActiveBundleUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.ObserveConfigSourcesUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.RefreshResult
+import com.onthecrow.onthecrowvpn.connection.domain.RefreshSourceUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.RemoveSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
-import com.onthecrow.onthecrowvpn.connection.model.ActiveBundleState
-import com.onthecrow.onthecrowvpn.connection.model.ConfigBundle
+import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
+import com.onthecrow.onthecrowvpn.connection.model.ConfigRow
+import com.onthecrow.onthecrowvpn.connection.model.ConfigSourcesState
 import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
+import com.onthecrow.onthecrowvpn.connection.model.SourceGroup
+import com.onthecrow.onthecrowvpn.connection.model.SourceKind
 import com.onthecrow.onthecrowvpn.vpn.ConnectResult
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import com.onthecrow.onthecrowvpn.vpn.VpnController
@@ -25,7 +32,8 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 internal class ConnectionViewModelTest {
@@ -42,51 +50,122 @@ internal class ConnectionViewModelTest {
     }
 
     @Test
-    fun activeBundleStatePopulatesUi() = runTest(dispatcher) {
-        val bundleFlow = MutableStateFlow(
-            ActiveBundleState(savedBundleId = "abc", bundle = sampleBundle("abc"), selectedConfigId = "c1"),
+    fun sourcesStatePopulatesUi() = runTest(dispatcher) {
+        val sourcesFlow = MutableStateFlow(
+            ConfigSourcesState(
+                groups = listOf(group("s1")),
+                selected = ConfigRef("s1", "c1"),
+                selectedConfig = config("c1"),
+            ),
         )
 
-        val viewModel = createViewModel(bundleFlow)
+        val viewModel = createViewModel(sourcesFlow)
         advanceUntilIdle()
 
-        assertEquals("abc", viewModel.state.value.idInput)
-        assertEquals(sampleBundle("abc"), viewModel.state.value.bundle)
-        assertEquals("c1", viewModel.state.value.selectedConfigId)
+        assertEquals(listOf(group("s1")), viewModel.state.value.groups)
+        assertEquals(ConfigRef("s1", "c1"), viewModel.state.value.selected)
+        assertEquals(config("c1"), viewModel.state.value.selectedConfig)
     }
 
     @Test
-    fun remoteRevocationClearsBundleAndShowsMessage() = runTest(dispatcher) {
-        val bundleFlow = MutableStateFlow(
-            ActiveBundleState(savedBundleId = "abc", bundle = sampleBundle("abc"), selectedConfigId = "c1"),
+    fun remoteRevocationShowsErrorSnackbar() = runTest(dispatcher) {
+        val sourcesFlow = MutableStateFlow(
+            ConfigSourcesState(groups = listOf(group("s1"))),
         )
 
-        val viewModel = createViewModel(bundleFlow)
+        val viewModel = createViewModel(sourcesFlow)
         advanceUntilIdle()
 
-        // The orchestrator wiped local state and emitted a one-shot revoked signal.
-        bundleFlow.value = ActiveBundleState(
-            revoked = true,
-            error = "This configuration is no longer available",
+        // Orchestrator removed the source and emitted the one-shot revocation signal.
+        sourcesFlow.value = ConfigSourcesState(
+            groups = emptyList(),
+            revokedActiveSelection = true,
+            revokedSourceTitles = listOf("sample"),
         )
         advanceUntilIdle()
 
-        assertNull(viewModel.state.value.bundle)
-        assertEquals("", viewModel.state.value.idInput)
-        assertEquals("This configuration is no longer available", viewModel.state.value.snackbarMessage)
+        assertTrue(viewModel.state.value.groups.isEmpty())
+        assertEquals(
+            SnackbarNotice("Subscription “sample” is no longer available", isError = true),
+            viewModel.state.value.snackbar,
+        )
+    }
+
+    @Test
+    fun invalidAddShowsErrorSnackbarAndNothingChanges() = runTest(dispatcher) {
+        val sourcesFlow = MutableStateFlow(ConfigSourcesState())
+        var addCalled = false
+        val viewModel = createViewModel(
+            sourcesFlow,
+            addSourceUseCase = object : AddSourceUseCase {
+                override suspend fun addSubscriptionId(raw: String): AddSourceResult {
+                    addCalled = true
+                    return AddSourceResult.Invalid("Bundle not found")
+                }
+
+                override suspend fun addSubscriptionUrl(raw: String) = AddSourceResult.Added
+                override suspend fun addXrayLink(raw: String) = AddSourceResult.Added
+            },
+        )
+        advanceUntilIdle()
+
+        viewModel.onEvent(
+            ConnectionEvent.OnAddFromClipboard(ConnectionEvent.AddKind.SUBSCRIPTION_ID, "dead-id"),
+        )
+        advanceUntilIdle()
+
+        assertTrue(addCalled)
+        assertEquals(SnackbarNotice("Bundle not found", isError = true), viewModel.state.value.snackbar)
+        assertTrue(viewModel.state.value.groups.isEmpty())
+    }
+
+    @Test
+    fun emptyClipboardShowsErrorWithoutCallingUseCase() = runTest(dispatcher) {
+        val sourcesFlow = MutableStateFlow(ConfigSourcesState())
+        var addCalled = false
+        val viewModel = createViewModel(
+            sourcesFlow,
+            addSourceUseCase = object : AddSourceUseCase {
+                override suspend fun addSubscriptionId(raw: String): AddSourceResult {
+                    addCalled = true
+                    return AddSourceResult.Added
+                }
+
+                override suspend fun addSubscriptionUrl(raw: String) = AddSourceResult.Added
+                override suspend fun addXrayLink(raw: String) = AddSourceResult.Added
+            },
+        )
+        advanceUntilIdle()
+
+        viewModel.onEvent(
+            ConnectionEvent.OnAddFromClipboard(ConnectionEvent.AddKind.SUBSCRIPTION_ID, "  "),
+        )
+        advanceUntilIdle()
+
+        assertFalse(addCalled)
+        assertEquals(SnackbarNotice("Clipboard is empty", isError = true), viewModel.state.value.snackbar)
     }
 
     private fun createViewModel(
-        bundleFlow: MutableStateFlow<ActiveBundleState>,
+        sourcesFlow: MutableStateFlow<ConfigSourcesState>,
+        addSourceUseCase: AddSourceUseCase = NoopAddSourceUseCase,
     ): ConnectionViewModel = ConnectionViewModel(
-        observeActiveBundleUseCase = ObserveActiveBundleUseCase { bundleFlow },
-        loadBundleUseCase = LoadBundleUseCase { },
+        observeConfigSourcesUseCase = ObserveConfigSourcesUseCase { sourcesFlow },
+        addSourceUseCase = addSourceUseCase,
+        removeSourceUseCase = RemoveSourceUseCase { },
+        refreshSourceUseCase = RefreshSourceUseCase { RefreshResult.Ok },
         selectConfigUseCase = SelectConfigUseCase { },
         prepareConnectionConfigUseCase = PrepareConnectionConfigUseCase { ConfigValidationResult.Valid("{}") },
         vpnController = FakeVpnController(),
         vpnPermissionRequester = FakeVpnPermissionRequester(),
         reducer = ConnectionReducer(),
     )
+
+    private object NoopAddSourceUseCase : AddSourceUseCase {
+        override suspend fun addSubscriptionId(raw: String) = AddSourceResult.Added
+        override suspend fun addSubscriptionUrl(raw: String) = AddSourceResult.Added
+        override suspend fun addXrayLink(raw: String) = AddSourceResult.Added
+    }
 
     private class FakeVpnController : VpnController {
         override val status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
@@ -98,11 +177,14 @@ internal class ConnectionViewModelTest {
         override suspend fun requestPermission(): VpnPermissionResult = VpnPermissionResult.Granted
     }
 
-    private fun sampleBundle(id: String) = ConfigBundle(
-        id = id,
-        name = "sample",
-        createdAt = 0,
-        updatedAt = 0,
-        configs = listOf(RemoteConfig(id = "c1", name = "Server", url = "vless://x")),
+    private fun config(id: String) = RemoteConfig(id = id, name = "Server", url = "vless://x")
+
+    private fun group(sourceId: String) = SourceGroup(
+        sourceId = sourceId,
+        kind = SourceKind.SUBSCRIPTION_ID,
+        title = "sample",
+        subtitle = "bundle-id",
+        rows = listOf(ConfigRow(ConfigRef(sourceId, "c1"), config("c1"))),
+        addedAt = 1L,
     )
 }

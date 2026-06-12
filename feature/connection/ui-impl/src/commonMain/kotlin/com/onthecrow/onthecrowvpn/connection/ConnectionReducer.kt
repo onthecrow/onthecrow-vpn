@@ -1,5 +1,6 @@
 package com.onthecrow.onthecrowvpn.connection
 
+import com.onthecrow.onthecrowvpn.connection.model.SourceGroup
 import com.onthecrow.onthecrowvpn.uicore.Reducer
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 
@@ -8,55 +9,55 @@ internal class ConnectionReducer : Reducer<ConnectionState, ConnectionEvent> {
         state: ConnectionState,
         event: ConnectionEvent,
     ): ConnectionState = when (event) {
-        is ConnectionEvent.OnIdInputChanged -> state.copy(
-            idInput = event.value,
-            bundleError = null,
-        )
-
-        ConnectionEvent.OnLoadStarted -> state.copy(
-            isLoadingBundle = true,
-            isEditingId = true,
-            bundleError = null,
-            bundle = null,
-            selectedConfigId = null,
-        )
-
-        ConnectionEvent.OnLoadClick -> state
-        ConnectionEvent.OnEditIdClick -> state.copy(isEditingId = true)
-
-        is ConnectionEvent.OnConfigSelected -> state.copy(selectedConfigId = event.configId)
-
-        ConnectionEvent.OnConnectClick,
-        ConnectionEvent.OnDisconnectClick -> state
-
-        is ConnectionEvent.OnActiveBundleChanged -> {
+        is ConnectionEvent.OnSourcesChanged -> {
             val s = event.state
-            // Sticky loading: once OnLoadStarted set isLoadingBundle=true, keep it true
-            // until either a bundle arrives or an error is reported. This hides the
-            // transient null-id phase that the LoadBundle use case produces to force
-            // a Firestore re-subscription.
-            val hasDefinitiveResult = s.bundle != null || s.error != null
+            val liveKeys = s.groups.mapTo(mutableSetOf(), SourceGroup::sourceId)
             state.copy(
-                // On revocation the saved id was wiped — clear the input box so the config fully
-                // disappears rather than leaving the now-dead id in place.
-                idInput = if (s.revoked) "" else (s.savedBundleId ?: state.idInput),
-                bundle = s.bundle,
-                selectedConfigId = s.selectedConfigId,
-                isLoadingBundle = if (hasDefinitiveResult) false else (s.isLoading || state.isLoadingBundle),
-                bundleError = s.error,
-                isEditingId = s.bundle == null || s.error != null,
+                groups = s.groups,
+                selected = s.selected,
+                selectedConfig = s.selectedConfig,
+                // Prune UI state of groups that no longer exist (deleted / revoked).
+                collapsedGroupKeys = state.collapsedGroupKeys intersect liveKeys,
+                refreshingSourceIds = state.refreshingSourceIds intersect liveKeys,
             )
         }
 
-        is ConnectionEvent.OnConnectionStatusChanged -> state.copy(
-            connectionStatus = event.status,
-            snackbarMessage = when (val status = event.status) {
-                is ConnectionStatus.Error -> status.message
-                else -> state.snackbarMessage
+        is ConnectionEvent.OnToggleGroupCollapsed -> state.copy(
+            collapsedGroupKeys = if (event.groupKey in state.collapsedGroupKeys) {
+                state.collapsedGroupKeys - event.groupKey
+            } else {
+                state.collapsedGroupKeys + event.groupKey
             },
         )
 
-        is ConnectionEvent.OnSnackbarRequested -> state.copy(snackbarMessage = event.message)
-        ConnectionEvent.OnSnackbarShown -> state.copy(snackbarMessage = null)
+        is ConnectionEvent.OnRefreshStateChanged -> state.copy(
+            refreshingSourceIds = if (event.refreshing) {
+                state.refreshingSourceIds + event.sourceId
+            } else {
+                state.refreshingSourceIds - event.sourceId
+            },
+        )
+
+        is ConnectionEvent.OnConnectionStatusChanged -> state.copy(
+            connectionStatus = event.status,
+            snackbar = when (val status = event.status) {
+                is ConnectionStatus.Error -> SnackbarNotice(status.message, isError = true)
+                else -> state.snackbar
+            },
+        )
+
+        is ConnectionEvent.OnSnackbarRequested ->
+            state.copy(snackbar = SnackbarNotice(event.message, event.isError))
+
+        ConnectionEvent.OnSnackbarShown -> state.copy(snackbar = null)
+
+        // Side-effect-only events: handled in the ViewModel, no state change here.
+        is ConnectionEvent.OnAddFromClipboard,
+        is ConnectionEvent.OnConfigSelected,
+        is ConnectionEvent.OnRefreshSourceClick,
+        is ConnectionEvent.OnDeleteSourceClick,
+        ConnectionEvent.OnConnectClick,
+        ConnectionEvent.OnDisconnectClick,
+        -> state
     }
 }

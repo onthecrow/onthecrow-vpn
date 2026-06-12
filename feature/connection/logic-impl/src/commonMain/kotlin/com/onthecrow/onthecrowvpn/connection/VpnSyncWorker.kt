@@ -2,6 +2,7 @@ package com.onthecrow.onthecrowvpn.connection
 
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigValidationResult
 import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
 import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.coroutines.ApplicationScopeProvider
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
@@ -14,12 +15,12 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Restarts the VPN whenever the active config (id or url) changes while the
+ * Restarts the VPN whenever the active config (ref or url) changes while the
  * tunnel is up. Sits in the application scope so background updates from
  * Firestore are honoured even when the UI is not on screen.
  */
 internal class VpnSyncWorker(
-    private val orchestrator: ActiveBundleOrchestrator,
+    private val orchestrator: ConfigSourcesOrchestrator,
     private val vpnController: VpnController,
     private val prepareConnectionConfig: PrepareConnectionConfigUseCase,
     scopeProvider: ApplicationScopeProvider,
@@ -35,41 +36,44 @@ internal class VpnSyncWorker(
         combine(
             orchestrator.state,
             vpnController.status,
-        ) { bundleState, status ->
-            val cfg = bundleState.bundle?.configs?.firstOrNull { it.id == bundleState.selectedConfigId }
-            ObservedTuple(cfg, status, bundleState.revoked)
+        ) { sourcesState, status ->
+            ObservedTuple(
+                ref = sourcesState.selected,
+                config = sourcesState.selectedConfig,
+                status = status,
+                revokedActive = sourcesState.revokedActiveSelection,
+            )
         }
             .distinctUntilChanged()
             .collect { tuple ->
-                if (tuple.revoked) {
-                    // The bundle was deleted remotely (orchestrator already wiped local state). Stop the
-                    // tunnel AND forget the system profile, regardless of current status. App-scoped, so
-                    // this fires even when the connection screen is not on display.
+                if (tuple.revokedActive) {
+                    // The source holding the ACTIVE config was deleted remotely (orchestrator already
+                    // removed it and cleared the selection). Stop the tunnel AND forget the system
+                    // profile, regardless of current status. Revocation of a non-active source never
+                    // reaches this branch and must not touch the tunnel.
                     activeKey.value = null
                     vpnController.revoke()
                     return@collect
                 }
-                val cfg = tuple.config
-                when (val status = tuple.status) {
-                    ConnectionStatus.Connected -> handleConnected(cfg)
+                when (tuple.status) {
+                    ConnectionStatus.Connected -> handleConnected(tuple.ref, tuple.config)
                     ConnectionStatus.Disconnected, is ConnectionStatus.Error -> {
                         activeKey.value = null
                     }
                     ConnectionStatus.Connecting, ConnectionStatus.Disconnecting, ConnectionStatus.PreparingPermission -> {
                         // Transient: don't interfere; let the in-flight transition finish.
-                        @Suppress("unused")
-                        status
                     }
                 }
             }
     }
 
-    private suspend fun handleConnected(cfg: RemoteConfig?) {
-        if (cfg == null) {
+    private suspend fun handleConnected(ref: ConfigRef?, cfg: RemoteConfig?) {
+        if (ref == null || cfg == null) {
             // No selection but VPN is up — leave it alone; UI surface will handle.
             return
         }
-        val current = ConfigKey(cfg.id, cfg.url)
+        // RemoteConfig.id is only unique within a source, so the key carries the full ref + url.
+        val current = ConfigKey(ref, cfg.url)
         val previous = activeKey.value
         if (previous == null) {
             // VPN was started outside our knowledge (initial connect); record and stop.
@@ -82,6 +86,7 @@ internal class VpnSyncWorker(
     }
 
     private suspend fun restartWith(cfg: RemoteConfig, key: ConfigKey) {
+        println("[OTC-WORKER] restart with: ${cfg.name} url=${cfg.url.take(40)}") // TEMP (diagnosis)
         vpnController.disconnect()
         // Wait for the service to fully tear down before reconnecting.
         // Accept Error too — a failed teardown still releases the tunnel.
@@ -100,10 +105,11 @@ internal class VpnSyncWorker(
         }
     }
 
-    private data class ConfigKey(val id: String, val url: String)
+    private data class ConfigKey(val ref: ConfigRef, val url: String)
     private data class ObservedTuple(
+        val ref: ConfigRef?,
         val config: RemoteConfig?,
         val status: ConnectionStatus,
-        val revoked: Boolean,
+        val revokedActive: Boolean,
     )
 }

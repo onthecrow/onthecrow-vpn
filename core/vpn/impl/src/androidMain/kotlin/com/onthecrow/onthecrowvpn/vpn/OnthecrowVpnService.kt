@@ -21,11 +21,13 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.onthecrow.onthecrowvpn.xray.AndroidVpnSocketProtector
+import com.onthecrow.onthecrowvpn.xray.AndroidXrayEnvironment
 import com.onthecrow.onthecrowvpn.xray.PlatformXrayEngine
 import com.onthecrow.onthecrowvpn.xray.XrayConfigSanitizer
 import com.onthecrow.onthecrowvpn.xray.XrayRunResult
@@ -77,6 +79,14 @@ class OnthecrowVpnService : VpnService() {
 
     // The single tunnel-health state machine (recover + keepalive); alive while screen-on + connected.
     private var tunnelJob: Job? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        // We run in the ":vpn" process, where the Application does NOT bring up the app graph — set up
+        // the small env libXray needs (datDir) ourselves.
+        AndroidXrayEnvironment.initialize(this)
+        AndroidVpnEnvironment.initialize(this)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         logd("onStartCommand action=${intent?.action} flags=$flags startId=$startId")
@@ -157,7 +167,7 @@ class OnthecrowVpnService : VpnService() {
                 }
                 when (val result = startXrayOnTun(configJson)) {
                     XrayRunResult.Success -> {
-                        AndroidVpnRuntime.status.value = ConnectionStatus.Connected
+                        VpnStatusBroadcast.send(this, ConnectionStatus.Connected)
                         logd(if (keepTun) "re-dial: connected" else "connect: connected")
                         if (!restart) startMonitoring()
                     }
@@ -187,6 +197,11 @@ class OnthecrowVpnService : VpnService() {
             logLevel = "info",
             errorLogPath = xrayLogPath,
         )
+        // TEMP (diagnosis): fingerprint of the client credential actually handed to xray — verifies a
+        // config switch really reaches the engine (per-client id/password/auth differ; prefix only).
+        val cred = Regex("\"(?:id|password|auth)\"\\s*:\\s*\"([^\"]+)\"")
+            .find(runtimeJson)?.groupValues?.get(1)
+        logd("xray start: client-credential=${cred?.take(6) ?: "?"}…")
         return xrayEngine.start(runtimeJson)
     }
 
@@ -209,15 +224,27 @@ class OnthecrowVpnService : VpnService() {
 
     private suspend fun runDisconnect(stopService: Boolean) {
         operationMutex.withLock {
-            AndroidVpnRuntime.status.value = ConnectionStatus.Disconnecting
+            VpnStatusBroadcast.send(this, ConnectionStatus.Disconnecting)
             stopMonitoring()
             stopTunnel()
-            AndroidVpnRuntime.status.value = ConnectionStatus.Disconnected
+            VpnStatusBroadcast.send(this, ConnectionStatus.Disconnected)
             if (stopService) {
                 ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                 stopSelf()
+                // Kill this ":vpn" process so xray-core's process-global hysteria connection pool is
+                // gone — the next connect starts a clean process and never reuses a stale QUIC session.
+                // Delay so the Disconnected broadcast above is dispatched first. stopSelf() already
+                // marked us stopped, so START_STICKY will NOT auto-restart this killed process.
+                scheduleProcessDeath()
             }
         }
+    }
+
+    private fun scheduleProcessDeath() {
+        Handler(Looper.getMainLooper()).postDelayed(
+            { Process.killProcess(Process.myPid()) },
+            PROCESS_DEATH_DELAY_MS,
+        )
     }
 
     /** Full teardown: stop xray AND close the tun interface (used on disconnect / fatal error). */
@@ -556,9 +583,10 @@ class OnthecrowVpnService : VpnService() {
                 logd("fail (tearing down): $message")
                 stopMonitoring()
                 stopTunnel()
-                AndroidVpnRuntime.status.value = ConnectionStatus.Error(message)
+                VpnStatusBroadcast.send(this@OnthecrowVpnService, ConnectionStatus.Error(message))
                 ServiceCompat.stopForeground(this@OnthecrowVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                 stopSelf()
+                scheduleProcessDeath()
             }
         }
     }
@@ -629,6 +657,9 @@ class OnthecrowVpnService : VpnService() {
         private const val TAG = "OnthecrowVpn"
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001
+
+        // Grace before killing the ":vpn" process on disconnect, so the Disconnected broadcast dispatches.
+        private const val PROCESS_DEATH_DELAY_MS = 300L
 
         // Wait before each recovery attempt (also the inter-attempt backoff). The first entry doubles as
         // the settle (let the radio/route commit). On exhaustion keepalive keeps watching. Tunable.
