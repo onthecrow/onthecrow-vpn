@@ -22,12 +22,19 @@ internal class ConnectionReducer : Reducer<ConnectionState, ConnectionEvent> {
             )
         }
 
-        is ConnectionEvent.OnToggleGroupCollapsed -> state.copy(
-            collapsedGroupKeys = if (event.groupKey in state.collapsedGroupKeys) {
-                state.collapsedGroupKeys - event.groupKey
-            } else {
+        is ConnectionEvent.OnSetGroupCollapsed -> state.copy(
+            collapsedGroupKeys = if (event.collapsed) {
                 state.collapsedGroupKeys + event.groupKey
+            } else {
+                state.collapsedGroupKeys - event.groupKey
             },
+        )
+
+        // Resolved once at start (saved set with the cold-start active-group override already applied).
+        // Flips [collapsedLoaded] so the group list may finally compose — with the right initial state.
+        is ConnectionEvent.OnCollapsedLoaded -> state.copy(
+            collapsedGroupKeys = event.collapsedGroupKeys,
+            collapsedLoaded = true,
         )
 
         is ConnectionEvent.OnRefreshStateChanged -> state.copy(
@@ -58,6 +65,7 @@ internal class ConnectionReducer : Reducer<ConnectionState, ConnectionEvent> {
         is ConnectionEvent.OnDeleteSourceClick,
         ConnectionEvent.OnConnectClick,
         ConnectionEvent.OnDisconnectClick,
+        ConnectionEvent.OnSettingsClick,
         -> state
     }
 }

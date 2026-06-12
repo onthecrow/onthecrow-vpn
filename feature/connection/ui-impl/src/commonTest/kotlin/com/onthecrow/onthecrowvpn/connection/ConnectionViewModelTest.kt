@@ -156,10 +156,22 @@ internal class ConnectionViewModelTest {
         refreshSourceUseCase = RefreshSourceUseCase { RefreshResult.Ok },
         selectConfigUseCase = SelectConfigUseCase { },
         prepareConnectionConfigUseCase = PrepareConnectionConfigUseCase { ConfigValidationResult.Valid("{}") },
+        collapsedGroupsUseCase = NoopCollapsedGroupsUseCase,
         vpnController = FakeVpnController(),
         vpnPermissionRequester = FakeVpnPermissionRequester(),
+        navigator = FakeNavigator(),
         reducer = ConnectionReducer(),
     )
+
+    private class FakeNavigator : com.onthecrow.onthecrowvpn.navigation.Navigator {
+        override fun navigate(destination: com.onthecrow.onthecrowvpn.navigation.Destination) = Unit
+        override fun back() = Unit
+    }
+
+    private object NoopCollapsedGroupsUseCase : com.onthecrow.onthecrowvpn.connection.domain.CollapsedGroupsUseCase {
+        override fun observe() = kotlinx.coroutines.flow.flowOf(emptySet<String>())
+        override suspend fun setCollapsed(groupKey: String, collapsed: Boolean) = Unit
+    }
 
     private object NoopAddSourceUseCase : AddSourceUseCase {
         override suspend fun addSubscriptionId(raw: String) = AddSourceResult.Added

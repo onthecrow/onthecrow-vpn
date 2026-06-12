@@ -15,8 +15,14 @@ internal data class ConnectionState(
     val groups: List<SourceGroup> = emptyList(),
     val selected: ConfigRef? = null,
     val selectedConfig: RemoteConfig? = null,
-    /** Group keys ([SourceGroup.sourceId]) the user collapsed. In-memory only (resets on restart). */
+    /** Group keys ([SourceGroup.sourceId]) the user collapsed. Persisted between sessions. */
     val collapsedGroupKeys: Set<String> = emptySet(),
+    /**
+     * The persisted collapsed set (and the cold-start active-group override) has been resolved. Until
+     * then the group list is withheld from composition so groups never render expanded-then-collapse
+     * (which would animate the collapse on every launch).
+     */
+    val collapsedLoaded: Boolean = false,
     /** Sources with a refresh in flight (spinner instead of the refresh glyph; re-taps ignored). */
     val refreshingSourceIds: Set<String> = emptySet(),
     val connectionStatus: ConnectionStatus = ConnectionStatus.Disconnected,

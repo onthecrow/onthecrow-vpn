@@ -29,6 +29,16 @@ actual class PlatformVpnController : VpnController {
             val intent = Intent(context, OnthecrowVpnService::class.java)
                 .setAction(OnthecrowVpnService.ACTION_CONNECT)
                 .putExtra(OnthecrowVpnService.EXTRA_XRAY_JSON, xrayJson)
+                // Resolved per-app routing (kept current by SplitTunnelAndroidSync); applied in the
+                // :vpn process's VpnService.Builder. At most one list is non-empty.
+                .putStringArrayListExtra(
+                    OnthecrowVpnService.EXTRA_DISALLOW,
+                    ArrayList(AndroidSplitTunnelState.disallow),
+                )
+                .putStringArrayListExtra(
+                    OnthecrowVpnService.EXTRA_ALLOW,
+                    ArrayList(AndroidSplitTunnelState.allow),
+                )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {

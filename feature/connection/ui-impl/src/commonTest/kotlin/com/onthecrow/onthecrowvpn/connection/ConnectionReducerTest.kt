@@ -52,12 +52,26 @@ internal class ConnectionReducerTest {
     }
 
     @Test
-    fun collapseTogglesGroupKey() = runTest {
-        var state = reducer.reduce(ConnectionState(), ConnectionEvent.OnToggleGroupCollapsed("s1"))
+    fun setGroupCollapsedAppliesTargetState() = runTest {
+        var state = reducer.reduce(ConnectionState(), ConnectionEvent.OnSetGroupCollapsed("s1", collapsed = true))
         assertEquals(setOf("s1"), state.collapsedGroupKeys)
 
-        state = reducer.reduce(state, ConnectionEvent.OnToggleGroupCollapsed("s1"))
+        // Idempotent: collapsing again keeps a single key (no toggle semantics).
+        state = reducer.reduce(state, ConnectionEvent.OnSetGroupCollapsed("s1", collapsed = true))
+        assertEquals(setOf("s1"), state.collapsedGroupKeys)
+
+        state = reducer.reduce(state, ConnectionEvent.OnSetGroupCollapsed("s1", collapsed = false))
         assertTrue(state.collapsedGroupKeys.isEmpty())
+    }
+
+    @Test
+    fun collapsedLoadedSeedsSetAndUnblocksComposition() = runTest {
+        val state = reducer.reduce(
+            ConnectionState(),
+            ConnectionEvent.OnCollapsedLoaded(setOf("s1", "s2")),
+        )
+        assertEquals(setOf("s1", "s2"), state.collapsedGroupKeys)
+        assertTrue(state.collapsedLoaded)
     }
 
     @Test

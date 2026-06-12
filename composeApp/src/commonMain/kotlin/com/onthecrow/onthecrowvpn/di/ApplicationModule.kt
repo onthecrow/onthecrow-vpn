@@ -9,6 +9,7 @@ import com.onthecrow.onthecrowvpn.firebase.di.firebaseModule
 import com.onthecrow.onthecrowvpn.navigation.Destination
 import com.onthecrow.onthecrowvpn.navigation.di.StartDestination
 import com.onthecrow.onthecrowvpn.navigation.di.navigationModule
+import com.onthecrow.onthecrowvpn.settings.di.settingsModule
 import com.onthecrow.onthecrowvpn.vpn.di.vpnModule
 import com.onthecrow.onthecrowvpn.xray.di.xrayModule
 import kotlinx.serialization.json.Json
@@ -27,5 +28,6 @@ val applicationModule = module {
         vpnModule,
         connectionLogicModule,
         connectionModule,
+        settingsModule,
     )
 }

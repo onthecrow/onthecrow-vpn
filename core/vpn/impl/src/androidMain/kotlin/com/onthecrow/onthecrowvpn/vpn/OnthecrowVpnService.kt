@@ -61,6 +61,14 @@ class OnthecrowVpnService : VpnService() {
     @Volatile
     private var activeXrayJson: String? = null
 
+    // Per-app routing for the current session (from the CONNECT intent), reused when a recovery
+    // rebuilds the tun so the same exclusions stay applied. At most one is non-empty.
+    @Volatile
+    private var activeDisallow: List<String> = emptyList()
+
+    @Volatile
+    private var activeAllow: List<String> = emptyList()
+
     // Network monitor: default callback (API 31+, reads the VPN's real underlying network) or a
     // NOT_VPN fallback (< 31). Refreshes xray when the underlying physical network actually changes.
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -94,6 +102,8 @@ class OnthecrowVpnService : VpnService() {
             ACTION_CONNECT -> {
                 startAsForeground()
                 val xrayJson = intent.getStringExtra(EXTRA_XRAY_JSON)
+                activeDisallow = intent.getStringArrayListExtra(EXTRA_DISALLOW).orEmpty()
+                activeAllow = intent.getStringArrayListExtra(EXTRA_ALLOW).orEmpty()
                 scope.launch { runConnect(xrayJson) }
             }
             ACTION_DISCONNECT -> scope.launch { runDisconnect(stopService = true) }
@@ -162,6 +172,7 @@ class OnthecrowVpnService : VpnService() {
                         // No loop risk: xray's upstream sockets are protected individually via protectFd.
                         // The underlying physical network is observed via the NOT_VPN NetworkRequest
                         // callback (independent of our process routing), not via our default network.
+                        .apply { applySplitTunnel(this) }
                         .establish()
                         ?: error("Android refused to establish VPN interface")
                 }
@@ -203,6 +214,27 @@ class OnthecrowVpnService : VpnService() {
             .find(runtimeJson)?.groupValues?.get(1)
         logd("xray start: client-credential=${cred?.take(6) ?: "?"}…")
         return xrayEngine.start(runtimeJson)
+    }
+
+    /**
+     * Apply per-app split-tunnel routing. disallow/allow are mutually exclusive. Invariants: never
+     * disallow our own package, and in allow-list mode always tunnel our own package — otherwise the
+     * health probe (running in this :vpn process) would test a direct connection instead of the tunnel.
+     */
+    private fun applySplitTunnel(builder: Builder) {
+        when {
+            activeDisallow.isNotEmpty() -> activeDisallow.filterNot { it == packageName }.forEach { pkg ->
+                runCatching { builder.addDisallowedApplication(pkg) }
+                    .onFailure { logd("split-tunnel: cannot disallow $pkg: ${it.message}") }
+            }
+            activeAllow.isNotEmpty() -> (activeAllow + packageName).distinct().forEach { pkg ->
+                runCatching { builder.addAllowedApplication(pkg) }
+                    .onFailure { logd("split-tunnel: cannot allow $pkg: ${it.message}") }
+            }
+        }
+        if (activeDisallow.isNotEmpty() || activeAllow.isNotEmpty()) {
+            logd("split-tunnel: disallow=$activeDisallow allow=$activeAllow")
+        }
     }
 
     /** Stop xray and close the dup tun fd it was using (we own it). The tun interface stays up. */
@@ -654,6 +686,8 @@ class OnthecrowVpnService : VpnService() {
         const val ACTION_DISCONNECT = "com.onthecrow.onthecrowvpn.vpn.DISCONNECT"
         const val ACTION_REVOKE = "com.onthecrow.onthecrowvpn.vpn.REVOKE"
         const val EXTRA_XRAY_JSON = "com.onthecrow.onthecrowvpn.vpn.EXTRA_XRAY_JSON"
+        const val EXTRA_DISALLOW = "com.onthecrow.onthecrowvpn.vpn.EXTRA_DISALLOW"
+        const val EXTRA_ALLOW = "com.onthecrow.onthecrowvpn.vpn.EXTRA_ALLOW"
         private const val TAG = "OnthecrowVpn"
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001

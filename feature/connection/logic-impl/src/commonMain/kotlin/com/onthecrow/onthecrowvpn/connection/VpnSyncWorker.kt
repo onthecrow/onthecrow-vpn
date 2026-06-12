@@ -7,6 +7,8 @@ import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.coroutines.ApplicationScopeProvider
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import com.onthecrow.onthecrowvpn.vpn.VpnController
+import com.onthecrow.onthecrowvpn.vpn.domain.SplitTunnelRepository
+import com.onthecrow.onthecrowvpn.vpn.model.SplitTunnelSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -23,6 +25,7 @@ internal class VpnSyncWorker(
     private val orchestrator: ConfigSourcesOrchestrator,
     private val vpnController: VpnController,
     private val prepareConnectionConfig: PrepareConnectionConfigUseCase,
+    private val splitTunnelRepository: SplitTunnelRepository,
     scopeProvider: ApplicationScopeProvider,
 ) {
     private val scope = scopeProvider.scope
@@ -36,12 +39,14 @@ internal class VpnSyncWorker(
         combine(
             orchestrator.state,
             vpnController.status,
-        ) { sourcesState, status ->
+            splitTunnelRepository.observe(),
+        ) { sourcesState, status, splitTunnel ->
             ObservedTuple(
                 ref = sourcesState.selected,
                 config = sourcesState.selectedConfig,
                 status = status,
                 revokedActive = sourcesState.revokedActiveSelection,
+                splitTunnel = splitTunnel,
             )
         }
             .distinctUntilChanged()
@@ -56,7 +61,7 @@ internal class VpnSyncWorker(
                     return@collect
                 }
                 when (tuple.status) {
-                    ConnectionStatus.Connected -> handleConnected(tuple.ref, tuple.config)
+                    ConnectionStatus.Connected -> handleConnected(tuple.ref, tuple.config, tuple.splitTunnel)
                     ConnectionStatus.Disconnected, is ConnectionStatus.Error -> {
                         activeKey.value = null
                     }
@@ -67,13 +72,15 @@ internal class VpnSyncWorker(
             }
     }
 
-    private suspend fun handleConnected(ref: ConfigRef?, cfg: RemoteConfig?) {
+    private suspend fun handleConnected(ref: ConfigRef?, cfg: RemoteConfig?, splitTunnel: SplitTunnelSettings) {
         if (ref == null || cfg == null) {
             // No selection but VPN is up — leave it alone; UI surface will handle.
             return
         }
-        // RemoteConfig.id is only unique within a source, so the key carries the full ref + url.
-        val current = ConfigKey(ref, cfg.url)
+        // RemoteConfig.id is only unique within a source, so the key carries the full ref + url. The
+        // split-tunnel settings are in the key too, so toggling them while connected restarts the tunnel
+        // (the new exclusions are applied at the next establish, read from the now-updated holder).
+        val current = ConfigKey(ref, cfg.url, splitTunnel)
         val previous = activeKey.value
         if (previous == null) {
             // VPN was started outside our knowledge (initial connect); record and stop.
@@ -105,11 +112,12 @@ internal class VpnSyncWorker(
         }
     }
 
-    private data class ConfigKey(val ref: ConfigRef, val url: String)
+    private data class ConfigKey(val ref: ConfigRef, val url: String, val splitTunnel: SplitTunnelSettings)
     private data class ObservedTuple(
         val ref: ConfigRef?,
         val config: RemoteConfig?,
         val status: ConnectionStatus,
         val revokedActive: Boolean,
+        val splitTunnel: SplitTunnelSettings,
     )
 }

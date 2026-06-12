@@ -16,6 +16,10 @@ interface ConfigSourcesRepository {
     fun observeSelection(): Flow<ConfigRef?>
     suspend fun setSelection(ref: ConfigRef?)
 
+    /** Persisted set of collapsed group keys (per-source UI preference, survives restarts). */
+    fun observeCollapsedGroups(): Flow<Set<String>>
+    suspend fun setGroupCollapsed(groupKey: String, collapsed: Boolean)
+
     /** One-time, idempotent migration of the legacy single-bundle keys into the sources list. */
     suspend fun migrateLegacyIfNeeded()
 }

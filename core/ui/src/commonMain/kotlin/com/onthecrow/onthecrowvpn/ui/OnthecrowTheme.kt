@@ -49,6 +49,14 @@ private val DarkColors = darkColorScheme(
     surfaceVariant = Color(0xFF41484B),
     onSurfaceVariant = Color(0xFFC1C8CB),
     outline = Color(0xFF8B9295),
+    // Elevated dark surfaces tinted to match the app background (Material defaults are neutral purple
+    // and clash with the teal-dark background). Tiers: background < element < card.
+    surfaceContainerLowest = Color(0xFF0B0F11),
+    surfaceContainerLow = Color(0xFF161D20),
+    surfaceContainer = Color(0xFF1B2326),
+    surfaceContainerHigh = Color(0xFF263033),
+    surfaceContainerHighest = Color(0xFF313C40),
+    outlineVariant = Color(0xFF3B4448),
 )
 
 val ConnectedGreen = Color(0xFF2E7D57)

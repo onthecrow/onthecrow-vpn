@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -65,6 +66,25 @@ internal class ConfigSourcesPreferencesDataSource(
         }
     }
 
+    fun observeCollapsedGroups(): Flow<Set<String>> = dataStore.data.map { prefs ->
+        decodeCollapsed(prefs[COLLAPSED_GROUPS_KEY])
+    }
+
+    suspend fun setGroupCollapsed(groupKey: String, collapsed: Boolean) {
+        writeMutex.withLock {
+            dataStore.edit { prefs ->
+                val current = decodeCollapsed(prefs[COLLAPSED_GROUPS_KEY])
+                val updated = if (collapsed) current + groupKey else current - groupKey
+                prefs[COLLAPSED_GROUPS_KEY] = json.encodeToString(STRING_LIST_SERIALIZER, updated.toList())
+            }
+        }
+    }
+
+    private fun decodeCollapsed(raw: String?): Set<String> {
+        if (raw.isNullOrBlank()) return emptySet()
+        return runCatching { json.decodeFromString(STRING_LIST_SERIALIZER, raw).toSet() }.getOrElse { emptySet() }
+    }
+
     suspend fun migrateLegacyIfNeeded(now: Long) {
         writeMutex.withLock {
             dataStore.edit { prefs -> migrateLegacyPreferences(prefs, json, now) }
@@ -87,8 +107,10 @@ internal class ConfigSourcesPreferencesDataSource(
 
     companion object {
         private val SOURCES_SERIALIZER = ListSerializer(ConfigSource.serializer())
+        private val STRING_LIST_SERIALIZER = ListSerializer(String.serializer())
 
         val SOURCES_KEY = stringPreferencesKey("sources_json")
+        val COLLAPSED_GROUPS_KEY = stringPreferencesKey("collapsed_groups")
         val SELECTED_SOURCE_KEY = stringPreferencesKey("selected_source_id")
         // New name: the legacy "selected_config_id" is consumed (and removed) by the migration.
         val SELECTED_CONFIG_KEY = stringPreferencesKey("selected_config_id_v2")

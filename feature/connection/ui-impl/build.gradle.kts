@@ -24,10 +24,12 @@ kotlin {
             implementation(projects.core.vpn.api)
             implementation(projects.feature.connection.logicApi)
             implementation(projects.feature.connection.uiApi)
+            implementation(projects.feature.settings.uiApi)
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)
             implementation(libs.compose.ui)
+            implementation(libs.compose.components.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
             implementation(libs.kotlinx.datetime)
@@ -35,6 +37,11 @@ kotlin {
             implementation(libs.koin.core)
             implementation(libs.koin.compose)
             implementation(libs.koin.compose.viewmodel)
+        }
+        androidMain.dependencies {
+            // Android Studio renders @Preview against this module's Android classpath, so it needs the
+            // androidx tooling (ComposeViewAdapter) here — not just in androidApp.
+            implementation(libs.compose.uiTooling)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

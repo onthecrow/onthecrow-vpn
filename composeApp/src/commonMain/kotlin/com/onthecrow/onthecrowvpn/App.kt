@@ -16,7 +16,7 @@ import org.koin.compose.getKoin
 @Preview
 fun App() {
     val darkTheme = isSystemInDarkTheme()
-    AppSystemBarsEffect(darkTheme)
+//    AppSystemBarsEffect(darkTheme)
     OnthecrowTheme(darkTheme = darkTheme) {
         val navigationProvider = getKoin().get<NavigationProvider>()
         Box(

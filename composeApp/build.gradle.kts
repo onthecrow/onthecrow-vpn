@@ -51,6 +51,8 @@ kotlin {
             implementation(projects.feature.connection.logicImpl)
             implementation(projects.feature.connection.uiApi)
             implementation(projects.feature.connection.uiImpl)
+            implementation(projects.feature.settings.uiApi)
+            implementation(projects.feature.settings.uiImpl)
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)

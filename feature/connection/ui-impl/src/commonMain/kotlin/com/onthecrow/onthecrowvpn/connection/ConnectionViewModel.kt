@@ -3,6 +3,7 @@ package com.onthecrow.onthecrowvpn.connection
 import androidx.lifecycle.viewModelScope
 import com.onthecrow.onthecrowvpn.connection.domain.AddSourceResult
 import com.onthecrow.onthecrowvpn.connection.domain.AddSourceUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.CollapsedGroupsUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigValidationResult
 import com.onthecrow.onthecrowvpn.connection.domain.ObserveConfigSourcesUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
@@ -12,24 +13,29 @@ import com.onthecrow.onthecrowvpn.connection.domain.RemoveSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
 import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
+import com.onthecrow.onthecrowvpn.navigation.Navigator
+import com.onthecrow.onthecrowvpn.settings.SettingsDestination
 import com.onthecrow.onthecrowvpn.uicore.BaseViewModel
 import com.onthecrow.onthecrowvpn.vpn.ConnectResult
 import com.onthecrow.onthecrowvpn.vpn.VpnController
 import com.onthecrow.onthecrowvpn.vpn.VpnPermissionRequester
 import com.onthecrow.onthecrowvpn.vpn.VpnPermissionResult
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 internal class ConnectionViewModel(
-    observeConfigSourcesUseCase: ObserveConfigSourcesUseCase,
+    private val observeConfigSourcesUseCase: ObserveConfigSourcesUseCase,
     private val addSourceUseCase: AddSourceUseCase,
     private val removeSourceUseCase: RemoveSourceUseCase,
     private val refreshSourceUseCase: RefreshSourceUseCase,
     private val selectConfigUseCase: SelectConfigUseCase,
     private val prepareConnectionConfigUseCase: PrepareConnectionConfigUseCase,
+    private val collapsedGroupsUseCase: CollapsedGroupsUseCase,
     private val vpnController: VpnController,
     private val vpnPermissionRequester: VpnPermissionRequester,
+    private val navigator: Navigator,
     reducer: ConnectionReducer,
 ) : BaseViewModel<ConnectionEvent, ConnectionState, ConnectionReducer>(reducer) {
 
@@ -38,13 +44,34 @@ internal class ConnectionViewModel(
             when (event) {
                 is ConnectionEvent.OnAddFromClipboard -> handleAddFromClipboard(event)
                 is ConnectionEvent.OnConfigSelected -> handleConfigSelected(event.ref)
+                is ConnectionEvent.OnSetGroupCollapsed -> handleSetGroupCollapsed(event)
                 is ConnectionEvent.OnRefreshSourceClick -> handleRefreshSource(event.sourceId)
                 is ConnectionEvent.OnDeleteSourceClick -> handleDeleteSource(event.sourceId)
                 ConnectionEvent.OnConnectClick -> handleConnectClick()
                 ConnectionEvent.OnDisconnectClick -> handleDisconnectClick()
+                ConnectionEvent.OnSettingsClick -> navigator.navigate(SettingsDestination)
                 else -> Unit
             }
         }.launchIn(viewModelScope)
+
+        // Resolve the initial collapsed set BEFORE any group composes. The screen withholds the group
+        // list until this lands ([ConnectionState.collapsedLoaded]); otherwise groups would first render
+        // expanded and then animate the collapse on every launch. Cold start only — the ViewModel is
+        // created once per process — so the active-group expand never fires on resume.
+        viewModelScope.launch {
+            val saved = collapsedGroupsUseCase.observe().first()
+            // Wait for the groups to materialize only when a selection exists (so its group can be
+            // found); with nothing selected — including a fresh install — resolve immediately.
+            val sources = observeConfigSourcesUseCase().first { it.selected == null || it.groups.isNotEmpty() }
+            // Force-expand the group holding the active config so it's visible without scrolling.
+            // Done in-memory only (not persisted) so the user's saved "collapsed" for it survives.
+            val activeGroup = sources.selected?.let { ref ->
+                sources.groups.firstOrNull { group ->
+                    group.sourceId == ref.sourceId || group.rows.any { it.ref == ref }
+                }?.sourceId
+            }
+            onEvent(ConnectionEvent.OnCollapsedLoaded(saved - setOfNotNull(activeGroup)))
+        }
 
         observeConfigSourcesUseCase()
             .onEach { sourcesState ->
@@ -87,6 +114,12 @@ internal class ConnectionViewModel(
                     onEvent(ConnectionEvent.OnSnackbarRequested(result.message, isError = true))
             }
         }
+    }
+
+    private fun handleSetGroupCollapsed(event: ConnectionEvent.OnSetGroupCollapsed) {
+        // Per-key persistence: the in-memory cold-start expand override is never written back, so a
+        // user's saved "collapsed" for the active group survives even though we expand it on launch.
+        viewModelScope.launch { collapsedGroupsUseCase.setCollapsed(event.groupKey, event.collapsed) }
     }
 
     private fun handleRefreshSource(sourceId: String) {

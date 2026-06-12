@@ -17,6 +17,8 @@ kotlin {
     sourceSets {
         androidMain.dependencies {
             implementation(libs.androidx.core.ktx)
+            // ApplicationScopeProvider for the split-tunnel sync (Android-only; core/coroutines has no macOS target).
+            implementation(projects.core.coroutines)
         }
         commonMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
@@ -28,6 +30,9 @@ kotlin {
         }
         jvmMain.dependencies {
             implementation(libs.kotlinx.serialization.json)
+        }
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
         }
     }
 }

@@ -1,8 +1,9 @@
 package com.onthecrow.onthecrowvpn.connection
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.gestures.Orientation
@@ -19,24 +20,27 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -56,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
@@ -63,15 +68,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
+import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRow
 import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.connection.model.SourceGroup
 import com.onthecrow.onthecrowvpn.connection.model.SourceKind
 import com.onthecrow.onthecrowvpn.ui.ConnectedGreen
 import com.onthecrow.onthecrowvpn.ui.DisconnectedGray
+import com.onthecrow.onthecrowvpn.ui.OnthecrowTheme
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
+import kotlinx.coroutines.launch
+import org.jetbrains.compose.ui.tooling.preview.Preview
+import kotlin.math.roundToInt
 
 /** Carries the error flag through the SnackbarHost so the host can style error snackbars. */
 private class ConnectionSnackbarVisuals(
@@ -124,48 +132,61 @@ internal fun ConnectionScreen(
             }
         },
     ) { contentPadding ->
-        LazyColumn(
+        val listState = rememberLazyListState()
+        // On a cold start, jump (no animation) to the group holding the already-selected config so the
+        // user lands on what they'll connect to. `remember` (not saveable) resets only on a fresh
+        // composition — so this fires on app open, not when resuming from the background.
+        var didInitialScroll by remember { mutableStateOf(false) }
+        LaunchedEffect(state.selected, state.groups) {
+            if (!didInitialScroll && state.selected != null) {
+                val groupIndex = state.groups.indexOfFirst { g -> g.rows.any { it.ref == state.selected } }
+                if (groupIndex >= 0) {
+                    listState.scrollToItem(groupIndex)
+                    didInitialScroll = true
+                }
+            }
+        }
+
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .padding(contentPadding)
-                .windowInsetsPadding(WindowInsets.safeDrawing),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(contentPadding),
         ) {
-            item(key = "top_bar") { TopBar(onEvent) }
-            item(key = "connect_button") {
-                ConnectButton(
-                    state = state,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .wrapContentWidth()
-                        .padding(vertical = 12.dp),
-                    onClick = { onEvent(ConnectionEvent.OnConnectClick) },
-                )
-            }
-            if (!state.hasAnySource) {
-                item(key = "empty_state") { EmptyState() }
-            }
-            state.groups.forEach { group ->
-                val collapsed = group.sourceId in state.collapsedGroupKeys
-                item(key = "header_${group.sourceId}") {
-                    GroupHeader(
-                        group = group,
-                        collapsed = collapsed,
-                        isRefreshing = group.sourceId in state.refreshingSourceIds,
-                        onEvent = onEvent,
-                    )
+            // Fixed header: title + add, and the connect button. Stay put while the list scrolls.
+            TopBar(
+                onEvent = onEvent,
+                modifier = Modifier.padding(start = 20.dp, end = 12.dp, top = 4.dp),
+            )
+            ConnectButton(
+                state = state,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .wrapContentWidth()
+                    .padding(vertical = 12.dp),
+                onClick = { onEvent(ConnectionEvent.OnConnectClick) },
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                state = listState,
+                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (!state.hasAnySource) {
+                    item(key = "empty_state") { EmptyState() }
                 }
-                if (!collapsed) {
+                // Withhold groups until the persisted collapsed state is resolved, so each group's
+                // first composition already reflects it — no collapse animation on launch.
+                if (state.collapsedLoaded) {
                     items(
-                        items = group.rows,
-                        key = { "row_${it.ref.sourceId}_${it.ref.configId}" },
-                    ) { row ->
-                        ConfigRowItem(
-                            row = row,
-                            swipeToDelete = group.kind == SourceKind.XRAY_LINK,
-                            isSelected = state.selected == row.ref,
+                        items = state.groups,
+                        key = { "group_${it.sourceId}" },
+                    ) { group ->
+                        GroupCard(
+                            group = group,
+                            collapsed = group.sourceId in state.collapsedGroupKeys,
+                            isRefreshing = group.sourceId in state.refreshingSourceIds,
+                            selected = state.selected,
                             onEvent = onEvent,
                         )
                     }
@@ -176,7 +197,10 @@ internal fun ConnectionScreen(
 }
 
 @Composable
-private fun TopBar(onEvent: (ConnectionEvent) -> Unit) {
+private fun TopBar(
+    onEvent: (ConnectionEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     // Clipboard must be read here — the composable is the only platform-free access point; the text
     // travels inside the event so the ViewModel stays testable.
     @Suppress("DEPRECATION") // LocalClipboard's suspend API has no common-code text accessor yet.
@@ -184,7 +208,7 @@ private fun TopBar(onEvent: (ConnectionEvent) -> Unit) {
     var menuExpanded by remember { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -194,12 +218,19 @@ private fun TopBar(onEvent: (ConnectionEvent) -> Unit) {
             color = MaterialTheme.colorScheme.onBackground,
             fontWeight = FontWeight.SemiBold,
         )
+        IconButton(onClick = { onEvent(ConnectionEvent.OnSettingsClick) }) {
+            Icon(
+                imageVector = MaterialSymbols.Settings,
+                contentDescription = "Settings",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Box {
             IconButton(onClick = { menuExpanded = true }) {
-                Text(
-                    text = "+",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.primary,
+                Icon(
+                    imageVector = MaterialSymbols.Add,
+                    contentDescription = "Add configuration",
+                    tint = MaterialTheme.colorScheme.primary,
                 )
             }
             DropdownMenu(
@@ -257,6 +288,50 @@ private fun EmptyState() {
     }
 }
 
+/**
+ * One rounded container per group: a header strip (chevron, 2-line title, refresh, overflow) and,
+ * when expanded, the config rows flush beneath it — slightly darker than the container and separated
+ * by horizontal dividers, no gaps.
+ */
+@Composable
+private fun GroupCard(
+    group: SourceGroup,
+    collapsed: Boolean,
+    isRefreshing: Boolean,
+    selected: ConfigRef?,
+    onEvent: (ConnectionEvent) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+    ) {
+        GroupHeader(
+            group = group,
+            collapsed = collapsed,
+            isRefreshing = isRefreshing,
+            onEvent = onEvent,
+        )
+        AnimatedVisibility(visible = !collapsed) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                group.rows.forEach { row ->
+                    HorizontalDivider(
+                        thickness = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                    )
+                    ConfigElement(
+                        row = row,
+                        isSelected = selected == row.ref,
+                        swipeToDelete = group.kind == SourceKind.XRAY_LINK,
+                        onEvent = onEvent,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun GroupHeader(
     group: SourceGroup,
@@ -265,21 +340,32 @@ private fun GroupHeader(
     onEvent: (ConnectionEvent) -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    // Subscription groups are deletable (the whole group); the "Xray links" group is not (links are
+    // deleted individually). Deletable groups get a long-press → Delete menu in addition to the ⋮ button.
+    val deletable = group.kind != SourceKind.XRAY_LINK
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .clickable { onEvent(ConnectionEvent.OnToggleGroupCollapsed(group.sourceId)) }
-                .padding(horizontal = 4.dp, vertical = 6.dp),
+                // Same header height for every group, including "Xray links" which has no action icons.
+                .heightIn(min = 60.dp)
+                .combinedClickable(
+                    onClick = { onEvent(ConnectionEvent.OnSetGroupCollapsed(group.sourceId, !collapsed)) },
+                    onLongClick = if (deletable) {
+                        { menuExpanded = true }
+                    } else {
+                        null
+                    },
+                )
+                .padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (collapsed) "▸" else "▾",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Icon(
+                imageVector = if (collapsed) MaterialSymbols.ArrowDropDown else MaterialSymbols.ArrowDropUp,
+                contentDescription = if (collapsed) "Expand" else "Collapse",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.size(8.dp))
+            Spacer(Modifier.size(6.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = group.title,
@@ -299,23 +385,25 @@ private fun GroupHeader(
                 }
             }
             if (group.isLoading || isRefreshing) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
             } else if (group.kind != SourceKind.XRAY_LINK) {
                 IconButton(onClick = { onEvent(ConnectionEvent.OnRefreshSourceClick(group.sourceId)) }) {
-                    Text(
-                        text = "↻",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Icon(
+                        imageVector = MaterialSymbols.Autorenew,
+                        contentDescription = "Refresh",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
             if (group.kind != SourceKind.XRAY_LINK) {
                 Box {
                     IconButton(onClick = { menuExpanded = true }) {
-                        Text(
-                            text = "⋮",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        Icon(
+                            imageVector = MaterialSymbols.MoreVert,
+                            contentDescription = "More",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     DropdownMenu(
@@ -336,7 +424,7 @@ private fun GroupHeader(
         group.error?.let { error ->
             Text(
                 text = error,
-                modifier = Modifier.padding(start = 24.dp, top = 2.dp),
+                modifier = Modifier.padding(start = 38.dp, end = 12.dp, bottom = 8.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -347,27 +435,35 @@ private fun GroupHeader(
 private enum class RevealValue { Hidden, Revealed }
 
 /**
- * Swipe-to-reveal delete: dragging the card left parks it shifted by [REVEAL_WIDTH], exposing a red
- * Delete button behind; deletion happens ONLY by tapping that button (dragging right hides it again).
- * Hand-rolled on AnchoredDraggable because Material3's SwipeToDismissBox deletes on a full swipe (and
- * its alpha build even fired dismiss on plain clicks).
+ * A flush config element inside a [GroupCard] — no card, no gaps; selection is shown by an opaque
+ * green background (no separate indicator). Xray links additionally support swipe-to-reveal delete.
  */
 @Composable
-private fun ConfigRowItem(
+private fun ConfigElement(
     row: ConfigRow,
-    swipeToDelete: Boolean,
     isSelected: Boolean,
+    swipeToDelete: Boolean,
     onEvent: (ConnectionEvent) -> Unit,
 ) {
+    val background = if (isSelected) {
+        // Opaque so the red delete backplate behind a swiped row never bleeds through the tint.
+        ConnectedGreen.copy(alpha = 0.20f).compositeOver(MaterialTheme.colorScheme.surfaceContainer)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainer
+    }
+
     if (!swipeToDelete) {
-        ConfigItemCard(
+        ElementRow(
             config = row.config,
-            isSelected = isSelected,
+            background = background,
             onClick = { onEvent(ConnectionEvent.OnConfigSelected(row.ref)) },
         )
         return
     }
 
+    // Swipe-to-reveal delete: dragging left parks the row by REVEAL_WIDTH, exposing a red Delete
+    // button behind; deletion happens only by tapping that button. Hand-rolled on AnchoredDraggable —
+    // Material3's SwipeToDismissBox deletes on a full swipe (and even fired on plain clicks).
     val revealWidthPx = with(LocalDensity.current) { REVEAL_WIDTH.toPx() }
     val dragState = remember(revealWidthPx) {
         AnchoredDraggableState(
@@ -379,13 +475,12 @@ private fun ConfigRowItem(
         )
     }
     val scope = rememberCoroutineScope()
+    var menuExpanded by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxWidth()) {
-        // The delete button lives BEHIND the card and is only reachable once the card is parked left.
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.error),
             contentAlignment = Alignment.CenterEnd,
         ) {
@@ -409,95 +504,70 @@ private fun ConfigRowItem(
                 .offset { IntOffset(dragState.requireOffset().roundToInt(), 0) }
                 .anchoredDraggable(dragState, Orientation.Horizontal),
         ) {
-            ConfigItemCard(
+            ElementRow(
                 config = row.config,
-                isSelected = isSelected,
+                background = background,
                 onClick = {
-                    // A tap selects; if the delete button was revealed, also slide back shut.
                     onEvent(ConnectionEvent.OnConfigSelected(row.ref))
                     if (dragState.currentValue == RevealValue.Revealed) {
                         scope.launch { dragState.animateTo(RevealValue.Hidden) }
                     }
                 },
+                // Alternative to swipe: long-press → Delete menu, for the same per-link removal.
+                onLongClick = { menuExpanded = true },
             )
-        }
-    }
-}
-
-@Composable
-private fun ConfigItemCard(
-    config: RemoteConfig,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-) {
-    // The selected tint must stay OPAQUE: a translucent green let the red delete backplate (behind
-    // swipeable rows) bleed through. Composite the green over the normal card colour instead.
-    val container =
-        if (isSelected) {
-            ConnectedGreen.copy(alpha = 0.18f).compositeOver(MaterialTheme.colorScheme.surfaceContainer)
-        } else {
-            MaterialTheme.colorScheme.surfaceContainer
-        }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = container),
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = config.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = subtitleFor(config),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                    onClick = {
+                        menuExpanded = false
+                        onEvent(ConnectionEvent.OnDeleteSourceClick(row.ref.sourceId))
+                    },
                 )
             }
-            Spacer(Modifier.size(12.dp))
-            SelectionIndicator(isSelected = isSelected)
         }
     }
 }
 
 @Composable
-private fun SelectionIndicator(isSelected: Boolean) {
-    if (isSelected) {
-        Box(
-            modifier = Modifier
-                .size(20.dp)
-                .clip(CircleShape)
-                .background(ConnectedGreen),
-            contentAlignment = Alignment.Center,
-        ) {
+private fun ElementRow(
+    config: RemoteConfig,
+    background: Color,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
+    val clickModifier = if (onLongClick != null) {
+        Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    } else {
+        Modifier.clickable(onClick = onClick)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(background)
+            .then(clickModifier)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = "✓",
-                color = MaterialTheme.colorScheme.onPrimary,
-                style = MaterialTheme.typography.labelMedium,
+                text = config.name,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = subtitleFor(config),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-    } else {
-        Box(
-            modifier = Modifier
-                .size(20.dp)
-                .clip(CircleShape)
-                .border(
-                    width = 1.5.dp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    shape = CircleShape,
-                ),
-        )
     }
 }
 
@@ -559,6 +629,66 @@ private fun ConnectButton(
             )
         }
     }
+}
+
+@Preview
+@Composable
+private fun ConnectionScreenPreview() {
+    OnthecrowTheme(darkTheme = true) {
+        ConnectionScreen(state = previewState(), onEvent = {})
+    }
+}
+
+@Preview
+@Composable
+private fun ConnectionScreenEmptyPreview() {
+    OnthecrowTheme(darkTheme = true) {
+        ConnectionScreen(state = ConnectionState(), onEvent = {})
+    }
+}
+
+private fun previewState(): ConnectionState {
+    fun config(id: String, name: String, url: String) = RemoteConfig(id = id, name = name, url = url)
+    fun row(sourceId: String, config: RemoteConfig) = ConfigRow(ConfigRef(sourceId, config.id), config)
+
+    val subId = SourceGroup(
+        sourceId = "sub1",
+        kind = SourceKind.SUBSCRIPTION_ID,
+        title = "onthecrow",
+        subtitle = "361b3d70-9cf5-4494-82aa-b6ce1e5c453d",
+        rows = listOf(
+            row("sub1", config("c1", "Russia #1", "vless://x")),
+            row("sub1", config("c2", "Russia #2", "hysteria2://x")),
+            row("sub1", config("c3", "Finland #1", "vless://x")),
+        ),
+        addedAt = 1L,
+    )
+    val subId2 = SourceGroup(
+        sourceId = "sub2",
+        kind = SourceKind.SUBSCRIPTION_URL,
+        title = "onthecrow::sub",
+        subtitle = "https://361b3d70-9cf5-4494-82aa-b6ce1e5c453d",
+        rows = listOf(
+            row("sub1", config("c1", "Russia #1", "vless://x")),
+            row("sub1", config("c2", "Russia #2", "hysteria2://x")),
+            row("sub1", config("c3", "Finland #1", "vless://x")),
+        ),
+        addedAt = 1L,
+    )
+    val xray = SourceGroup(
+        sourceId = SourceGroup.XRAY_LINKS_GROUP_ID,
+        kind = SourceKind.XRAY_LINK,
+        title = "Xray links",
+        rows = listOf(row("link1", config("l1", "fi-direct-ded", "hysteria2://x"))),
+        addedAt = 3L,
+    )
+    return ConnectionState(
+        groups = listOf(subId, subId2, xray),
+        selected = ConfigRef("sub1", "c3"),
+        selectedConfig = subId.rows[2].config,
+        collapsedLoaded = true,
+        connectionStatus = ConnectionStatus.Connected,
+    )
 }
 
 private val REVEAL_WIDTH = 88.dp

@@ -24,6 +24,11 @@ internal class ConfigSourcesRepositoryImpl(
 
     override suspend fun setSelection(ref: ConfigRef?) = dataSource.setSelection(ref)
 
+    override fun observeCollapsedGroups(): Flow<Set<String>> = dataSource.observeCollapsedGroups()
+
+    override suspend fun setGroupCollapsed(groupKey: String, collapsed: Boolean) =
+        dataSource.setGroupCollapsed(groupKey, collapsed)
+
     @OptIn(ExperimentalTime::class)
     override suspend fun migrateLegacyIfNeeded() =
         dataSource.migrateLegacyIfNeeded(now = Clock.System.now().toEpochMilliseconds())
