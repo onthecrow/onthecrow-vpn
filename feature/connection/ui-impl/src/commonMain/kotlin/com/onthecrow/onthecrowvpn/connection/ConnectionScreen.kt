@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -36,9 +39,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Surface
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,13 +65,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRow
@@ -135,7 +149,8 @@ internal fun ConnectionScreen(
         val listState = rememberLazyListState()
         // On a cold start, jump (no animation) to the group holding the already-selected config so the
         // user lands on what they'll connect to. `remember` (not saveable) resets only on a fresh
-        // composition — so this fires on app open, not when resuming from the background.
+        // composition — so this fires on app open, not when resuming from the background. With
+        // reverseLayout, scrollToItem brings the group to the bottom of the viewport (above Connect).
         var didInitialScroll by remember { mutableStateOf(false) }
         LaunchedEffect(state.selected, state.groups) {
             if (!didInitialScroll && state.selected != null) {
@@ -147,30 +162,42 @@ internal fun ConnectionScreen(
             }
         }
 
-        Column(
+        // The list scrolls UNDER the bottom action bar (settings FAB · connect · add FAB) AND under the
+        // transparent system bars. The container takes only horizontal (cutout) insets; the status-bar
+        // and nav-bar insets become list/bar padding so content can scroll behind both bars.
+        val layoutDirection = LocalLayoutDirection.current
+        val navBarInset = contentPadding.calculateBottomPadding()
+        val statusBarInset = contentPadding.calculateTopPadding()
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .padding(contentPadding),
+                .padding(
+                    start = contentPadding.calculateStartPadding(layoutDirection),
+                    end = contentPadding.calculateEndPadding(layoutDirection),
+                ),
         ) {
-            // Fixed header: title + add, and the connect button. Stay put while the list scrolls.
-            TopBar(
-                onEvent = onEvent,
-                modifier = Modifier.padding(start = 20.dp, end = 12.dp, top = 4.dp),
-            )
-            ConnectButton(
-                state = state,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .wrapContentWidth()
-                    .padding(vertical = 12.dp),
-                onClick = { onEvent(ConnectionEvent.OnConnectClick) },
-            )
+            val density = LocalDensity.current
+            // Measured height of the whole bottom bar INCLUDING its vertical padding and the nav-bar
+            // inset it carries; used as the list's bottom inset so the last rows scroll clear of the bar.
+            var bottomBarHeight by remember { mutableStateOf(0.dp) }
+
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 state = listState,
-                contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                // reverseLayout: the list RESTS at the bottom (item 0 just above the connect button) and
+                // scrolls UP — so on open the start point is at the bottom, not the top. Alignment.Bottom
+                // makes short content hug the bottom too. The status-bar inset is in contentPadding (not
+                // the Box) so items scroll under the transparent status bar; the bottom inset keeps the
+                // last rows clear of the connect button.
+                reverseLayout = true,
+                contentPadding = PaddingValues(
+                    start = 20.dp,
+                    end = 20.dp,
+                    top = statusBarInset + 8.dp,
+                    bottom = bottomBarHeight,
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.Bottom),
             ) {
                 if (!state.hasAnySource) {
                     item(key = "empty_state") { EmptyState() }
@@ -192,65 +219,140 @@ internal fun ConnectionScreen(
                     }
                 }
             }
+
+            // Edge scrims under the transparent system bars: the app background fades from ~0.8 alpha at
+            // each screen edge to transparent over 2× the bar height, so the status-bar / nav-bar content
+            // stays legible over the list scrolling behind them. Drawn above the list, below the buttons.
+            val scrimColor = MaterialTheme.colorScheme.background
+            if (statusBarInset > 0.dp) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .height(statusBarInset * 2)
+                        .background(
+                            Brush.verticalGradient(listOf(scrimColor.copy(alpha = 0.8f), Color.Transparent)),
+                        ),
+                )
+            }
+            if (navBarInset > 0.dp) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(navBarInset * 2)
+                        .background(
+                            Brush.verticalGradient(listOf(Color.Transparent, scrimColor.copy(alpha = 0.8f))),
+                        ),
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    // onSizeChanged BEFORE padding → reports the full footprint (bar + vertical padding +
+                    // nav-bar inset), which is exactly the list's bottom contentPadding.
+                    .onSizeChanged { bottomBarHeight = with(density) { it.height.toDp() } }
+                    // Bottom padding carries the nav-bar inset so the buttons sit above the transparent
+                    // nav bar while the list still scrolls under it.
+                    .padding(top = 12.dp, bottom = 12.dp + navBarInset),
+                horizontalArrangement = Arrangement.spacedBy(BottomBarSpacing, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SettingsFab(onClick = { onEvent(ConnectionEvent.OnSettingsClick) })
+                ConnectButton(
+                    state = state,
+                    onClick = { onEvent(ConnectionEvent.OnConnectClick) },
+                )
+                AddConfigFab(onEvent = onEvent)
+            }
         }
     }
 }
 
+/** Neutral, circular elevated FAB that opens the settings screen. */
 @Composable
-private fun TopBar(
-    onEvent: (ConnectionEvent) -> Unit,
-    modifier: Modifier = Modifier,
-) {
+private fun SettingsFab(onClick: () -> Unit) {
+    FloatingActionButton(
+        onClick = onClick,
+        shape = CircleShape,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Icon(imageVector = MaterialSymbols.Settings, contentDescription = "Settings")
+    }
+}
+
+/** Circular elevated FAB that opens the "add from clipboard" menu (subscription id / url / xray link). */
+@Composable
+private fun AddConfigFab(onEvent: (ConnectionEvent) -> Unit) {
     // Clipboard must be read here — the composable is the only platform-free access point; the text
     // travels inside the event so the ViewModel stays testable.
     @Suppress("DEPRECATION") // LocalClipboard's suspend API has no common-code text accessor yet.
     val clipboard = LocalClipboardManager.current
     var menuExpanded by remember { mutableStateOf(false) }
+    val gapPx = with(LocalDensity.current) { BottomBarSpacing.roundToPx() }
 
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "Onthecrow VPN",
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground,
-            fontWeight = FontWeight.SemiBold,
-        )
-        IconButton(onClick = { onEvent(ConnectionEvent.OnSettingsClick) }) {
-            Icon(
-                imageVector = MaterialSymbols.Settings,
-                contentDescription = "Settings",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    Box {
+        FloatingActionButton(
+            onClick = { menuExpanded = true },
+            shape = CircleShape,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.primary,
+        ) {
+            Icon(imageVector = MaterialSymbols.Add, contentDescription = "Add configuration")
         }
-        Box {
-            IconButton(onClick = { menuExpanded = true }) {
-                Icon(
-                    imageVector = MaterialSymbols.Add,
-                    contentDescription = "Add configuration",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-            DropdownMenu(
-                expanded = menuExpanded,
+        if (menuExpanded) {
+            // Custom popup so we can centre it on the FAB and place it exactly [BottomBarSpacing] above
+            // (matching the FAB↔Connect gap) — DropdownMenu can't be positioned that precisely.
+            Popup(
+                popupPositionProvider = remember(gapPx) { CenteredAbovePopupPositionProvider(gapPx) },
                 onDismissRequest = { menuExpanded = false },
+                properties = PopupProperties(focusable = true),
             ) {
-                AddMenuItem("Subscription ID", ConnectionEvent.AddKind.SUBSCRIPTION_ID) { kind ->
-                    menuExpanded = false
-                    onEvent(ConnectionEvent.OnAddFromClipboard(kind, clipboard.getText()?.text))
-                }
-                AddMenuItem("Subscription URL", ConnectionEvent.AddKind.SUBSCRIPTION_URL) { kind ->
-                    menuExpanded = false
-                    onEvent(ConnectionEvent.OnAddFromClipboard(kind, clipboard.getText()?.text))
-                }
-                AddMenuItem("Xray URL", ConnectionEvent.AddKind.XRAY_LINK) { kind ->
-                    menuExpanded = false
-                    onEvent(ConnectionEvent.OnAddFromClipboard(kind, clipboard.getText()?.text))
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 3.dp,
+                    shadowElevation = 6.dp,
+                ) {
+                    Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                        AddMenuItem("Subscription ID", ConnectionEvent.AddKind.SUBSCRIPTION_ID) { kind ->
+                            menuExpanded = false
+                            onEvent(ConnectionEvent.OnAddFromClipboard(kind, clipboard.getText()?.text))
+                        }
+                        AddMenuItem("Subscription URL", ConnectionEvent.AddKind.SUBSCRIPTION_URL) { kind ->
+                            menuExpanded = false
+                            onEvent(ConnectionEvent.OnAddFromClipboard(kind, clipboard.getText()?.text))
+                        }
+                        AddMenuItem("Xray URL", ConnectionEvent.AddKind.XRAY_LINK) { kind ->
+                            menuExpanded = false
+                            onEvent(ConnectionEvent.OnAddFromClipboard(kind, clipboard.getText()?.text))
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+/**
+ * Places the popup so its horizontal centre matches the anchor (the add FAB) centre, sitting [gapPx]
+ * above it — clamped to the window. Used to keep the add menu centred on the "+" with the same gap as
+ * between the FAB and the connect button.
+ */
+private class CenteredAbovePopupPositionProvider(private val gapPx: Int) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val x = anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2
+        val y = anchorBounds.top - popupContentSize.height - gapPx
+        val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+        return IntOffset(x.coerceIn(0, maxX), y.coerceAtLeast(0))
     }
 }
 
@@ -606,6 +708,11 @@ private fun ConnectButton(
             containerColor = color,
             disabledContainerColor = DisconnectedGray.copy(alpha = 0.45f),
         ),
+        elevation = ButtonDefaults.buttonElevation(
+            defaultElevation = 8.dp,
+            pressedElevation = 12.dp,
+            disabledElevation = 0.dp,
+        ),
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             if (state.isBusy) {
@@ -692,6 +799,9 @@ private fun previewState(): ConnectionState {
 }
 
 private val REVEAL_WIDTH = 88.dp
+
+// Gap between the bottom-bar buttons; reused as the add-menu popup's gap above the "+" FAB.
+private val BottomBarSpacing = 20.dp
 
 private fun subtitleFor(config: RemoteConfig): String {
     val scheme = config.url.substringBefore("://", missingDelimiterValue = "")

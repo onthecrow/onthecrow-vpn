@@ -13,6 +13,9 @@ import java.io.File
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import kotlin.coroutines.cancellation.CancellationException
+
+private const val LOG_TAG = "XRAY"
 
 actual class PlatformXrayEngine : XrayEngine {
     private val json = Json { ignoreUnknownKeys = true }
@@ -37,6 +40,7 @@ actual class PlatformXrayEngine : XrayEngine {
         val libClass = libXrayClass ?: return XrayValidationResult.Invalid(
             "libXray is not installed. Run scripts/build-libxray-android.sh first.",
         )
+        OtcLog.log(LOG_TAG, "validate: rawLen=${trimmed.length}")
         return runCatching {
             val converted = callResponse(
                 methodName = "convertShareLinksToXrayJson",
@@ -59,25 +63,36 @@ actual class PlatformXrayEngine : XrayEngine {
                 libClass = libClass,
             )
             if (!testResult.success) {
+                OtcLog.log(LOG_TAG, "validate: testXray REJECTED — ${testResult.error}")
                 XrayValidationResult.Invalid(testResult.error ?: "Xray rejected configuration")
             } else {
+                OtcLog.log(LOG_TAG, "validate: OK")
                 XrayValidationResult.Valid(
                     xrayJson = xrayJson,
                     summary = summarizer.summarize(xrayJson, fallbackTitle = "Xray config"),
                 )
             }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            OtcLog.log(LOG_TAG, "validate: THREW ${error.stackTraceToString()}")
             XrayValidationResult.Invalid(error.message ?: "Failed to validate Xray config")
         }
     }
 
     override suspend fun setTunFd(fd: Int) {
-        val libClass = libXrayClass ?: return
-        runCatching {
-            findMethod(libClass, "setTunFd", Int::class.javaPrimitiveType)?.invoke(null, fd)
-                ?: findMethod(libClass, "setTunFd", Integer.TYPE)?.invoke(null, fd)
-                ?: findMethod(libClass, "setTunFd", Long::class.javaPrimitiveType)?.invoke(null, fd.toLong())
+        val libClass = libXrayClass ?: run {
+            OtcLog.log(LOG_TAG, "setTunFd($fd) skipped — libXray not loaded")
+            return
         }
+        runCatching {
+            val via = when {
+                findMethod(libClass, "setTunFd", Int::class.javaPrimitiveType)?.also { it.invoke(null, fd) } != null -> "int"
+                findMethod(libClass, "setTunFd", Integer.TYPE)?.also { it.invoke(null, fd) } != null -> "Integer"
+                findMethod(libClass, "setTunFd", Long::class.javaPrimitiveType)?.also { it.invoke(null, fd.toLong()) } != null -> "long"
+                else -> "NONE"
+            }
+            OtcLog.log(LOG_TAG, "setTunFd($fd) via=$via")
+        }.onFailure { OtcLog.log(LOG_TAG, "setTunFd($fd) FAILED: ${it.message}") }
     }
 
     override suspend fun start(xrayJson: String): XrayRunResult {
@@ -92,14 +107,22 @@ actual class PlatformXrayEngine : XrayEngine {
                     "configJSON" to xrayJson,
                 )
             )
+            OtcLog.log(LOG_TAG, "runXrayFromJSON: configBytes=${xrayJson.length}")
             val response = callResponse(
                 methodName = "runXrayFromJSON",
                 argument = base64(request),
                 libClass = libClass,
             )
-            if (response.success) XrayRunResult.Success
-            else XrayRunResult.Failure(response.error ?: "Xray failed to start")
+            if (response.success) {
+                OtcLog.log(LOG_TAG, "runXrayFromJSON: success")
+                XrayRunResult.Success
+            } else {
+                OtcLog.log(LOG_TAG, "runXrayFromJSON: FAILED error=${response.error}")
+                XrayRunResult.Failure(response.error ?: "Xray failed to start")
+            }
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            OtcLog.log(LOG_TAG, "runXrayFromJSON: THREW ${error.stackTraceToString()}")
             XrayRunResult.Failure(error.message ?: "Xray failed to start")
         }
     }
@@ -108,9 +131,12 @@ actual class PlatformXrayEngine : XrayEngine {
         val libClass = libXrayClass ?: return XrayRunResult.Success
         return runCatching {
             val response = callResponse("stopXray", null, libClass)
+            OtcLog.log(LOG_TAG, "stopXray: success=${response.success} error=${response.error}")
             if (response.success) XrayRunResult.Success
             else XrayRunResult.Failure(response.error ?: "Xray failed to stop")
         }.getOrElse { error ->
+            if (error is CancellationException) throw error
+            OtcLog.log(LOG_TAG, "stopXray: THREW ${error.stackTraceToString()}")
             XrayRunResult.Failure(error.message ?: "Xray failed to stop")
         }
     }
@@ -146,14 +172,18 @@ actual class PlatformXrayEngine : XrayEngine {
             "libxray.DialerController",
         ).firstNotNullOfOrNull { className ->
             runCatching { Class.forName(className) }.getOrNull()
-        } ?: return
+        } ?: run {
+            OtcLog.log(LOG_TAG, "registerProtectControllers: DialerController interface NOT found")
+            return
+        }
         val proxy = Proxy.newProxyInstance(
             controllerInterface.classLoader,
             arrayOf(controllerInterface),
             ProtectFdInvocationHandler,
         )
-        findMethod(libClass, "registerDialerController", controllerInterface)?.invoke(null, proxy)
-        findMethod(libClass, "registerListenerController", controllerInterface)?.invoke(null, proxy)
+        val dialer = findMethod(libClass, "registerDialerController", controllerInterface)?.also { it.invoke(null, proxy) }
+        val listener = findMethod(libClass, "registerListenerController", controllerInterface)?.also { it.invoke(null, proxy) }
+        OtcLog.log(LOG_TAG, "registerProtectControllers: dialer=${dialer != null} listener=${listener != null}")
     }
 
     private fun findMethod(
@@ -190,15 +220,23 @@ actual class PlatformXrayEngine : XrayEngine {
 
     private object ProtectFdInvocationHandler : InvocationHandler {
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any>?): Any? {
-            if (!method.name.equals("protectFd", ignoreCase = true)) {
-                return defaultForReturnType(method.returnType)
+            // This runs on xray's (Go) threads via JNI. An exception thrown back across the JNI boundary
+            // can crash the whole :vpn process, so NOTHING here may propagate — swallow everything and
+            // return a safe default for the method's return type.
+            return try {
+                if (!method.name.equals("protectFd", ignoreCase = true)) {
+                    return defaultForReturnType(method.returnType)
+                }
+                val fd = when (val raw = args?.firstOrNull()) {
+                    is Int -> raw
+                    is Long -> raw.toInt()
+                    else -> return false
+                }
+                AndroidVpnSocketProtector.protect(fd)
+            } catch (t: Throwable) {
+                OtcLog.log(LOG_TAG, "protectFd handler threw (swallowed): ${t.message}")
+                defaultForReturnType(method.returnType)
             }
-            val fd = when (val raw = args?.firstOrNull()) {
-                is Int -> raw
-                is Long -> raw.toInt()
-                else -> return false
-            }
-            return AndroidVpnSocketProtector.protect(fd)
         }
 
         private fun defaultForReturnType(type: Class<*>): Any? = when (type) {

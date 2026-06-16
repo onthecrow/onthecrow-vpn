@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import com.onthecrow.onthecrowvpn.xray.OtcLog
 
 /**
  * Carries [ConnectionStatus] from the VpnService (running in the ":vpn" process) to the controller in
@@ -25,6 +26,7 @@ internal object VpnStatusBroadcast {
 
     /** Publish a status from the service process. */
     fun send(context: Context, status: ConnectionStatus) {
+        OtcLog.log("BCAST", "send status=$status")
         val (code, message) = encode(status)
         val intent = Intent(ACTION)
             .setPackage(context.packageName)

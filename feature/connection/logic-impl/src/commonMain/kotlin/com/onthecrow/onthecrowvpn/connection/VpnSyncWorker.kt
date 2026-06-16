@@ -8,6 +8,7 @@ import com.onthecrow.onthecrowvpn.coroutines.ApplicationScopeProvider
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import com.onthecrow.onthecrowvpn.vpn.VpnController
 import com.onthecrow.onthecrowvpn.vpn.domain.SplitTunnelRepository
+import com.onthecrow.onthecrowvpn.vpn.log.DebugLog
 import com.onthecrow.onthecrowvpn.vpn.model.SplitTunnelSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -51,6 +52,10 @@ internal class VpnSyncWorker(
         }
             .distinctUntilChanged()
             .collect { tuple ->
+                DebugLog.log(
+                    "WORKER",
+                    "observe: status=${tuple.status} ref=${tuple.ref} revoked=${tuple.revokedActive} activeKey=${activeKey.value != null}",
+                )
                 if (tuple.revokedActive) {
                     // The source holding the ACTIVE config was deleted remotely (orchestrator already
                     // removed it and cleared the selection). Stop the tunnel AND forget the system
@@ -93,21 +98,24 @@ internal class VpnSyncWorker(
     }
 
     private suspend fun restartWith(cfg: RemoteConfig, key: ConfigKey) {
-        println("[OTC-WORKER] restart with: ${cfg.name} url=${cfg.url.take(40)}") // TEMP (diagnosis)
+        DebugLog.log("WORKER", "restartWith: ${cfg.name} url=${cfg.url.take(40)} — disconnecting")
         vpnController.disconnect()
         // Wait for the service to fully tear down before reconnecting.
         // Accept Error too — a failed teardown still releases the tunnel.
         vpnController.status
             .filter { it is ConnectionStatus.Disconnected || it is ConnectionStatus.Error }
             .first()
+        DebugLog.log("WORKER", "restartWith: torn down — validating new config")
         when (val result = prepareConnectionConfig(cfg.url)) {
             is ConfigValidationResult.Valid -> {
+                DebugLog.log("WORKER", "restartWith: valid — reconnecting")
                 vpnController.connect(result.xrayJson)
                 activeKey.value = key
             }
             is ConfigValidationResult.Invalid -> {
                 // Validation failed for the new config: surface is via VpnController error
                 // status / snackbar pathway; nothing else to do here.
+                DebugLog.log("WORKER", "restartWith: INVALID config — ${result.message}")
             }
         }
     }
