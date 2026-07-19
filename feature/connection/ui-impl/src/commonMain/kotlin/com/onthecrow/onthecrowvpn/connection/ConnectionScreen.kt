@@ -1,6 +1,9 @@
 package com.onthecrow.onthecrowvpn.connection
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -70,6 +73,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -93,6 +97,7 @@ import com.onthecrow.onthecrowvpn.connection.model.SourceKind
 import com.onthecrow.onthecrowvpn.ui.Accent
 import com.onthecrow.onthecrowvpn.ui.OnthecrowTheme
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.ui.tooling.preview.Preview
 import kotlin.math.roundToInt
@@ -305,7 +310,9 @@ private fun AddConfigFab(onEvent: (ConnectionEvent) -> Unit) {
             onClick = { menuExpanded = true },
             shape = CircleShape,
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            contentColor = MaterialTheme.colorScheme.primary,
+            // Same tone as the settings FAB opposite: the two flank the connect button and should read
+            // as one pair, so neither competes with it for attention.
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ) {
             Icon(imageVector = MaterialSymbols.Add, contentDescription = "Add configuration")
         }
@@ -728,25 +735,58 @@ private fun ConnectButton(
     // Idle, the button sits in the same surface tone as the two FABs flanking it — the bottom bar reads
     // as one group, and Accent is reserved for "the tunnel is actually up".
     val idleColor = MaterialTheme.colorScheme.surfaceContainerHigh
-    val color = if (connected) Accent else idleColor
+    val enabled = state.canConnect || connected
+    val onIdle = MaterialTheme.colorScheme.onSurface
+    val onAccent = MaterialTheme.colorScheme.onPrimary
+
+    // The fill and the halo are SEQUENCED, not simultaneous. Connecting floods the button from the
+    // centre outwards and only then lights the halo; disconnecting fades the halo first and only then
+    // drains the fill back to the centre. Played together the two motions competed and read as noise;
+    // one after the other reads as cause and effect.
+    //
+    // Initial value, not an animation, when the screen opens on an already-live tunnel — reopening the
+    // app should show the finished state, not replay the connect sequence.
+    val fill = remember { Animatable(if (connected) 1f else 0f) }
+    var haloActive by remember { mutableStateOf(connected) }
+    LaunchedEffect(connected) {
+        if (connected) {
+            fill.animateTo(1f, tween(FillDurationMillis, easing = FastOutSlowInEasing))
+            haloActive = true
+        } else {
+            haloActive = false
+            // Hold until the glow has actually gone: NimbusActivationMillis is its ramp-out.
+            delay(NimbusActivationMillis.toLong())
+            fill.animateTo(0f, tween(FillDurationMillis, easing = FastOutSlowInEasing))
+        }
+    }
+    // A toggle mid-sequence just re-targets the same Animatable, so the fill carries on from wherever
+    // it is instead of jumping.
+
     Button(
         onClick = onClick,
-        enabled = state.canConnect || connected,
+        enabled = enabled,
         // Nimbus glow ring marks an ACTIVE tunnel. It draws outside the button's bounds, so it must
         // come before any sizing/clipping and nothing above may clip (the bottom bar and root Box don't).
+        //
         modifier = modifier
-            .nimbusDefaults(active = connected, shape = CircleShape)
+            .nimbusDefaults(active = haloActive, shape = CircleShape)
             .size(132.dp),
         shape = CircleShape,
+        // Zero padding so the fill below can span the whole button rather than an inset content box.
+        contentPadding = PaddingValues(0.dp),
+        // The container must stay FULLY OPAQUE, including when disabled — hence compositeOver rather
+        // than a plain alpha. Android tessellates an elevation shadow into a polygon and the Surface
+        // paints it in front of anything we draw behind the button, so the moment the container lets
+        // light through, that polygon shows through the face of the button. Painting the fill
+        // underneath a transparent container is what exposed it; the fill now goes ABOVE the
+        // container, in the content layer.
         colors = ButtonDefaults.buttonColors(
-            containerColor = color,
-            contentColor = if (connected) {
-                MaterialTheme.colorScheme.onPrimary
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-            disabledContainerColor = idleColor.copy(alpha = 0.45f),
-            disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            containerColor = idleColor,
+            // Tracks the fill itself, so the label's contrast flips exactly as the accent reaches it.
+            contentColor = lerp(onIdle, onAccent, fill.value),
+            disabledContainerColor = idleColor.copy(alpha = 0.45f)
+                .compositeOver(MaterialTheme.colorScheme.surface),
+            disabledContentColor = onIdle.copy(alpha = 0.38f),
         ),
         elevation = ButtonDefaults.buttonElevation(
             defaultElevation = 8.dp,
@@ -754,26 +794,39 @@ private fun ConnectButton(
             disabledElevation = 0.dp,
         ),
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            if (state.isBusy) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    strokeWidth = 2.dp,
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-            Text(
-                text = when (state.connectionStatus) {
-                    is ConnectionStatus.Connected -> "Connected"
-                    is ConnectionStatus.Disconnecting -> "Disconnecting"
-                    is ConnectionStatus.Connecting,
-                    is ConnectionStatus.PreparingPermission -> "Connecting"
-                    else -> "Connect"
+        Box(
+            // Spans the whole button (contentPadding is zero), so the disc is concentric with it and
+            // at fill=1 lands exactly on the edge — a CircleShape button needs no clipping for this.
+            modifier = Modifier
+                .fillMaxSize()
+                .drawBehind {
+                    if (fill.value > 0f) {
+                        drawCircle(color = Accent, radius = fill.value * size.minDimension / 2f)
+                    }
                 },
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-            )
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (state.isBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                Text(
+                    text = when (state.connectionStatus) {
+                        is ConnectionStatus.Connected -> "Connected"
+                        is ConnectionStatus.Disconnecting -> "Disconnecting"
+                        is ConnectionStatus.Connecting,
+                        is ConnectionStatus.PreparingPermission -> "Connecting"
+                        else -> "Connect"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -842,6 +895,11 @@ private val REVEAL_WIDTH = 88.dp
 
 // Accent pill marking the active config, flush against the row's left edge (Happ-style).
 private val ACTIVE_MARKER_WIDTH = 4.dp
+
+// How long the connect button takes to flood with accent (and to drain back). Deliberately shorter
+// than the halo's ramp — the fill is the lead-in, the glow is the payoff, and the pair should land
+// well inside a second.
+private const val FillDurationMillis = 400
 
 // Gap between the bottom-bar buttons; reused as the add-menu popup's gap above the "+" FAB.
 private val BottomBarSpacing = 20.dp

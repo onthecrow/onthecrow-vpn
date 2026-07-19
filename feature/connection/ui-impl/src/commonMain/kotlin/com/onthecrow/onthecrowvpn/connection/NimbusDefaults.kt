@@ -51,10 +51,20 @@ private val NimbusDefaultLayers: List<NimbusLayer> = listOf(
 )
 
 /**
+ * How long the glow takes to ramp in or out.
+ *
+ * Anything that should read as part of the same transition — the button's own colour above all — must
+ * animate over this exact duration. A snapped colour against a 700 ms halo reads as two separate
+ * things happening, which is most obvious on deactivation, where the button greys out instantly while
+ * the glow is still fading.
+ */
+internal const val NimbusActivationMillis = 700
+
+/**
  * `Modifier.nimbus` preconfigured as in the Nimbus sample.
  *
- * @param active whether the glow is shown; flipping it animates in/out over 700 ms. While false the
- *   node isn't redrawn at all, so a disconnected button costs nothing.
+ * @param active whether the glow is shown; flipping it animates in/out over [NimbusActivationMillis].
+ *   While false the node isn't redrawn at all, so a disconnected button costs nothing.
  * @param shape MUST match the shape the button is drawn with, or the spikes won't follow its edge.
  */
 internal fun Modifier.nimbusDefaults(
@@ -70,5 +80,5 @@ internal fun Modifier.nimbusDefaults(
     effectIntensity = 1f,
     countEasing = FastOutSlowInEasing,
     rotationEasing = LinearEasing,
-    activationSpec = tween(700),
+    activationSpec = tween(NimbusActivationMillis),
 )

@@ -27,4 +27,13 @@ libs/LibXray/
 # Signing keystores — never commit
 *.jks
 *.keystore
+
+# Build outputs. A release APK once reached a commit and blocked the push at
+# GitHub's 100 MB limit, so this covers the artefacts as well as the directory.
 /androidApp/release/
+*.apk
+*.aab
+
+# Diagnostic logs pulled off the device (vpn-debug.log, xray.log). They record
+# connection destinations, so they should never end up in the repo.
+*.log
