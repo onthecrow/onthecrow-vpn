@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OnthecrowVPN — Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1a1c1e; --muted:#5b6165; --bg:#ffffff; --rule:#e3e6e8; --accent:#0f8ea1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e3e3e3; --muted:#a8b0b4; --bg:#121416; --rule:#2a2e31; --accent:#4dd0e1; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto; padding: 40px 20px 80px; max-width: 720px;
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 6px; }
+  h2 { font-size: 1.15rem; margin: 40px 0 10px; }
+  .updated { color: var(--muted); font-size: .9rem; margin: 0 0 32px; }
+  p, li { color: var(--fg); }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 40px 0; }
+  a { color: var(--accent); }
+  .lede { font-size: 1.05rem; }
+  code { background: color-mix(in srgb, var(--fg) 8%, transparent); padding: 1px 5px; border-radius: 4px; font-size: .9em; }
+</style>
+</head>
+<body>
+
+<h1>Privacy Policy</h1>
+<p class="updated">OnthecrowVPN · Last updated: 20 July 2026</p>
+
+<p class="lede">
+  OnthecrowVPN does not collect, store, or transmit your personal data. There are no accounts, no
+  advertising, and no analytics that track what you do. This page explains what the app does with
+  information, which is mostly: nothing leaves your device.
+</p>
+
+<h2>What the app is</h2>
+<p>
+  OnthecrowVPN is a VPN client. It routes your device's traffic through a server that <strong>you</strong>
+  configure, using a configuration you supply or subscribe to. We do not operate those servers, and we
+  have no visibility into the traffic that passes through them.
+</p>
+
+<h2>Information the app stores on your device</h2>
+<ul>
+  <li><strong>Your configurations</strong> — the server details you add, and which one is selected.</li>
+  <li><strong>Your settings</strong> — split tunnelling choices (which apps bypass or use the VPN) and
+    notification preferences.</li>
+  <li><strong>A diagnostic log</strong> — see the section below.</li>
+</ul>
+<p>
+  All of this stays in the app's own storage on your device. Uninstalling the app removes it.
+</p>
+
+<h2>Information the app sends</h2>
+<ul>
+  <li><strong>To your VPN server:</strong> your traffic, encrypted. That is the point of a VPN. What the
+    operator of that server can see is governed by their policy, not ours.</li>
+  <li><strong>To our configuration service:</strong> when you add a subscription, the app asks a
+    Google Firebase (Firestore) database whether a configuration bundle with the identifier you entered
+    exists, and retrieves it. This request carries the identifier you typed and the usual network
+    metadata any HTTPS request carries, such as your IP address. It does not carry your identity, your
+    traffic, or any browsing information.</li>
+  <li><strong>Nothing else.</strong> The app has no analytics SDK and shows no advertising.</li>
+</ul>
+
+<h2>Diagnostic log</h2>
+<p>
+  The app keeps a rolling technical log on your device to make connection problems diagnosable. It
+  records events such as when the tunnel connects, drops and reconnects, network changes, and errors
+  reported by the VPN engine. On debug builds it also records the destination addresses of proxied
+  connections; release builds do not.
+</p>
+<p>
+  <strong>This log never leaves your device unless you send it.</strong> There is no automatic upload.
+  Settings contains a version row; long-pressing it opens the system share sheet so you can send the
+  log to us — or anywhere else — if you are reporting a problem. Please look at it before you share it.
+  The file is capped in size and older entries are discarded.
+</p>
+
+<h2>Crash reporting</h2>
+<p>
+  Builds distributed through app stores may include Firebase Crashlytics. If present, it sends a crash
+  report when the app crashes: the stack trace, the device model, and the OS version. It does not send
+  your configurations, your traffic, or your diagnostic log. See
+  <a href="https://firebase.google.com/support/privacy" rel="noopener">Firebase's privacy documentation</a>
+  for how Google handles that data.
+</p>
+
+<h2>Permissions and why</h2>
+<ul>
+  <li><strong>VPN service</strong> — required to create the tunnel. Android asks for your explicit
+    consent the first time.</li>
+  <li><strong>Notifications</strong> — Android requires a VPN to show an ongoing notification while it
+    is running.</li>
+  <li><strong>Ignore battery optimisations</strong> — optional, and only so the tunnel can be restored
+    reliably while the device is idle.</li>
+  <li><strong>Query installed apps</strong> — to show you a list of apps in the split-tunnelling screen.
+    The list is read on your device and never sent anywhere.</li>
+</ul>
+
+<h2>Children</h2>
+<p>
+  The app is not directed at children and collects no information from anyone, including children.
+</p>
+
+<h2>Changes</h2>
+<p>
+  If this policy changes, the revised version will be published at this address with an updated date.
+</p>
+
+<h2>Contact</h2>
+<p>
+  Questions about this policy: <a href="mailto:crow09021993@gmail.com">crow09021993@gmail.com</a>
+</p>
+
+<hr>
+<p class="updated">
+  This document describes the application's behaviour. It is not a statement about the privacy practices
+  of whoever operates the VPN server you choose to connect to.
+</p>
+
+</body>
+</html>
