@@ -1,3 +1,8 @@
 <resources>
     <string name="app_name">OnthecrowVPN</string>
+    <!-- Quick Settings tile subtitle states. -->
+    <string name="tile_connecting">Connecting…</string>
+    <string name="tile_disconnecting">Disconnecting…</string>
+    <string name="tile_error">Error</string>
+    <string name="tile_no_config">No configuration</string>
 </resources>

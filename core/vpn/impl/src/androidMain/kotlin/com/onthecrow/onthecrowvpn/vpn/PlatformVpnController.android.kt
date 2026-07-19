@@ -17,6 +17,9 @@ actual class PlatformVpnController : VpnController {
     init {
         // The service lives in the ":vpn" process now, so its status arrives via broadcast; mirror it
         // into the main-process StateFlow the rest of the app already observes.
+        //
+        // This process takes NO part in recovery. It is normally dead while the tunnel runs, so the
+        // `:vpn` process owns its own recovery ladder end to end; we are a UI mirror.
         VpnStatusBroadcast.register(AndroidVpnEnvironment.applicationContext) { status ->
             OtcLog.log(LOG_TAG, "status broadcast received: $status")
             AndroidVpnRuntime.status.value = status

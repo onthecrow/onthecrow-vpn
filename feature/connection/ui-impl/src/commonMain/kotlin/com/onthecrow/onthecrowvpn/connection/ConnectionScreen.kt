@@ -65,6 +65,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
@@ -75,6 +77,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -87,8 +90,7 @@ import com.onthecrow.onthecrowvpn.connection.model.ConfigRow
 import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.connection.model.SourceGroup
 import com.onthecrow.onthecrowvpn.connection.model.SourceKind
-import com.onthecrow.onthecrowvpn.ui.ConnectedGreen
-import com.onthecrow.onthecrowvpn.ui.DisconnectedGray
+import com.onthecrow.onthecrowvpn.ui.Accent
 import com.onthecrow.onthecrowvpn.ui.OnthecrowTheme
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import kotlinx.coroutines.launch
@@ -263,6 +265,10 @@ internal fun ConnectionScreen(
                 SettingsFab(onClick = { onEvent(ConnectionEvent.OnSettingsClick) })
                 ConnectButton(
                     state = state,
+                    // Draw LAST among the bar's children (zIndex changes draw order, not layout) so the
+                    // Nimbus glow renders over the FABs. The bar itself is the last child of the root Box,
+                    // so the glow already sits above the list and the edge scrims.
+                    modifier = Modifier.zIndex(1f),
                     onClick = { onEvent(ConnectionEvent.OnConnectClick) },
                 )
                 AddConfigFab(onEvent = onEvent)
@@ -549,7 +555,7 @@ private fun ConfigElement(
 ) {
     val background = if (isSelected) {
         // Opaque so the red delete backplate behind a swiped row never bleeds through the tint.
-        ConnectedGreen.copy(alpha = 0.20f).compositeOver(MaterialTheme.colorScheme.surfaceContainer)
+        Accent.copy(alpha = 0.20f).compositeOver(MaterialTheme.colorScheme.surfaceContainer)
     } else {
         MaterialTheme.colorScheme.surfaceContainer
     }
@@ -558,6 +564,7 @@ private fun ConfigElement(
         ElementRow(
             config = row.config,
             background = background,
+            isSelected = isSelected,
             onClick = { onEvent(ConnectionEvent.OnConfigSelected(row.ref)) },
         )
         return
@@ -609,6 +616,7 @@ private fun ConfigElement(
             ElementRow(
                 config = row.config,
                 background = background,
+                isSelected = isSelected,
                 onClick = {
                     onEvent(ConnectionEvent.OnConfigSelected(row.ref))
                     if (dragState.currentValue == RevealValue.Revealed) {
@@ -638,6 +646,7 @@ private fun ConfigElement(
 private fun ElementRow(
     config: RemoteConfig,
     background: Color,
+    isSelected: Boolean,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -646,29 +655,47 @@ private fun ElementRow(
     } else {
         Modifier.clickable(onClick = onClick)
     }
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .background(background)
-            .then(clickModifier)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            // Active-config marker: a square-cut accent bar down the row's full height, flush against
+            // the left edge. Drawn rather than laid out, because the row's height comes from its
+            // content — a child with fillMaxHeight would resolve against the LazyColumn's unbounded
+            // height constraint instead.
+            .then(
+                if (isSelected) {
+                    Modifier.drawBehind {
+                        drawRect(color = Accent, size = Size(ACTIVE_MARKER_WIDTH.toPx(), size.height))
+                    }
+                } else {
+                    Modifier
+                },
+            )
+            .then(clickModifier),
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Text(
-                text = config.name,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = subtitleFor(config),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = config.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = subtitleFor(config),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -698,15 +725,28 @@ private fun ConnectButton(
     onClick: () -> Unit,
 ) {
     val connected = state.connectionStatus is ConnectionStatus.Connected
-    val color = if (connected) ConnectedGreen else DisconnectedGray
+    // Idle, the button sits in the same surface tone as the two FABs flanking it — the bottom bar reads
+    // as one group, and Accent is reserved for "the tunnel is actually up".
+    val idleColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val color = if (connected) Accent else idleColor
     Button(
         onClick = onClick,
         enabled = state.canConnect || connected,
-        modifier = modifier.size(132.dp),
+        // Nimbus glow ring marks an ACTIVE tunnel. It draws outside the button's bounds, so it must
+        // come before any sizing/clipping and nothing above may clip (the bottom bar and root Box don't).
+        modifier = modifier
+            .nimbusDefaults(active = connected, shape = CircleShape)
+            .size(132.dp),
         shape = CircleShape,
         colors = ButtonDefaults.buttonColors(
             containerColor = color,
-            disabledContainerColor = DisconnectedGray.copy(alpha = 0.45f),
+            contentColor = if (connected) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            disabledContainerColor = idleColor.copy(alpha = 0.45f),
+            disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
         ),
         elevation = ButtonDefaults.buttonElevation(
             defaultElevation = 8.dp,
@@ -725,7 +765,7 @@ private fun ConnectButton(
             }
             Text(
                 text = when (state.connectionStatus) {
-                    is ConnectionStatus.Connected -> "Disconnect"
+                    is ConnectionStatus.Connected -> "Connected"
                     is ConnectionStatus.Disconnecting -> "Disconnecting"
                     is ConnectionStatus.Connecting,
                     is ConnectionStatus.PreparingPermission -> "Connecting"
@@ -799,6 +839,9 @@ private fun previewState(): ConnectionState {
 }
 
 private val REVEAL_WIDTH = 88.dp
+
+// Accent pill marking the active config, flush against the row's left edge (Happ-style).
+private val ACTIVE_MARKER_WIDTH = 4.dp
 
 // Gap between the bottom-bar buttons; reused as the add-menu popup's gap above the "+" FAB.
 private val BottomBarSpacing = 20.dp

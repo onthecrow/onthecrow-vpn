@@ -18,7 +18,6 @@ import com.onthecrow.onthecrowvpn.settings.SettingsDestination
 import com.onthecrow.onthecrowvpn.uicore.BaseViewModel
 import com.onthecrow.onthecrowvpn.vpn.ConnectResult
 import com.onthecrow.onthecrowvpn.vpn.VpnController
-import com.onthecrow.onthecrowvpn.vpn.log.DebugLog
 import com.onthecrow.onthecrowvpn.vpn.VpnPermissionRequester
 import com.onthecrow.onthecrowvpn.vpn.VpnPermissionResult
 import kotlinx.coroutines.flow.first
@@ -141,7 +140,6 @@ internal class ConnectionViewModel(
 
     private fun handleConfigSelected(ref: ConfigRef) {
         viewModelScope.launch {
-            DebugLog.log("UI", "select: ref=$ref") // TEMP (diagnosis)
             // Persist only. VpnSyncWorker is the SINGLE owner of live-tunnel switches: it reacts to
             // the selection change while Connected (disconnect → await → prepare → connect,
             // sequentially). Doing the same dance here too made TWO actors race one switch — two
@@ -158,7 +156,6 @@ internal class ConnectionViewModel(
             return
         }
         val cfg = state.value.selectedConfig
-        DebugLog.log("UI", "connect click: selected=${state.value.selected} config=${cfg?.name} url=${cfg?.url?.take(40)}") // TEMP
         if (cfg == null) {
             onEvent(ConnectionEvent.OnSnackbarRequested("Select a configuration first"))
             return
@@ -168,7 +165,6 @@ internal class ConnectionViewModel(
 
     /** Validate the config's share link, ensure VPN permission, then ask the controller to connect. */
     private suspend fun startConnection(config: RemoteConfig) {
-        DebugLog.log("UI", "startConnection: ${config.name} url=${config.url.take(40)}") // TEMP
         when (val result = prepareConnectionConfigUseCase(config.url)) {
             is ConfigValidationResult.Invalid -> {
                 onEvent(ConnectionEvent.OnSnackbarRequested(result.message, isError = true))

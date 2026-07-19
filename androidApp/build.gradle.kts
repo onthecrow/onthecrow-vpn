@@ -35,8 +35,18 @@ kotlin {
     }
 }
 dependencies {
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(projects.composeApp)
     implementation(projects.core.vpn.impl)
+    // Quick Settings tile talks to the same controller/use cases the UI does.
+    implementation(projects.core.vpn.api)
+    implementation(projects.core.coroutines)
+    implementation(projects.feature.connection.logicApi)
 
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
@@ -44,6 +54,10 @@ dependencies {
     implementation(libs.koin.android)
 
     implementation(libs.compose.uiToolingPreview)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.compose.uiTooling)
 
     val libXrayAar = rootProject.file("local-libs/libxray/LibXray.aar")
@@ -102,5 +116,8 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+    buildFeatures {
+        compose = true
     }
 }

@@ -2,25 +2,8 @@ package com.onthecrow.onthecrowvpn.vpn
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 internal class RecoveryHelpersTest {
-
-    @Test
-    fun firstRecoveryAttemptIsImmediateThenBacksOff() {
-        assertEquals(0L, recoveryDelayMs(0)) // attempt 0 fires immediately
-        assertEquals(1_000L, recoveryDelayMs(1))
-        assertEquals(2_000L, recoveryDelayMs(2))
-        assertEquals(4_000L, recoveryDelayMs(3))
-    }
-
-    @Test
-    fun fastAttemptsStayUnderTheUnacceptableCeiling() {
-        // Sum of inter-attempt delays across all fast attempts must be well under the 20s "unacceptable"
-        // bar even before counting probe windows.
-        val totalDelay = (0 until MAX_FAST_ATTEMPTS).sumOf { recoveryDelayMs(it) }
-        assertTrue(totalDelay <= 7_000L, "total backoff $totalDelay ms too high")
-    }
 
     @Test
     fun dnsQueryHasCorrectHeaderQuestionAndFooter() {

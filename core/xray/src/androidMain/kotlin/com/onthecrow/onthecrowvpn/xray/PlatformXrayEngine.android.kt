@@ -17,6 +17,24 @@ import kotlin.coroutines.cancellation.CancellationException
 
 private const val LOG_TAG = "XRAY"
 
+/**
+ * The protect controllers are registered into a PROCESS-GLOBAL slice inside xray (Go), which is
+ * iterated for every outbound socket before bind. Registering on each [PlatformXrayEngine.start] —
+ * as this used to — appends another pair every time, so after N in-process re-dials each socket
+ * creation costs 2N JNI round-trips in the hot path, and any handler returning `false` risks xray
+ * treating the socket as unprotected, which routes it back into our own tun (an encapsulation loop
+ * that presents exactly as "tunnel dead"). Register once per process instead.
+ */
+private val protectControllersRegistered = java.util.concurrent.atomic.AtomicBoolean(false)
+
+/**
+ * How many sockets xray has asked us to protect in this process. This is the **eviction oracle**: a
+ * recovery that does not increment it did not open a fresh upstream connection — xray handed back the
+ * pooled (and possibly dead) one. The recovery ladder logs the delta across each tier, which is the
+ * only way to tell "re-dialled" from "re-used" without reading xray's own debug log.
+ */
+val protectFdCount = java.util.concurrent.atomic.AtomicLong(0)
+
 actual class PlatformXrayEngine : XrayEngine {
     private val json = Json { ignoreUnknownKeys = true }
     private val summarizer = XrayConfigSummarizer(json)
@@ -167,6 +185,7 @@ actual class PlatformXrayEngine : XrayEngine {
     }
 
     private fun registerProtectControllers(libClass: Class<*>) {
+        if (!protectControllersRegistered.compareAndSet(false, true)) return
         val controllerInterface = listOf(
             "libXray.DialerController",
             "libxray.DialerController",
@@ -232,6 +251,7 @@ actual class PlatformXrayEngine : XrayEngine {
                     is Long -> raw.toInt()
                     else -> return false
                 }
+                OtcLog.log(LOG_TAG, "protectFd #${protectFdCount.incrementAndGet()} fd=$fd")
                 AndroidVpnSocketProtector.protect(fd)
             } catch (t: Throwable) {
                 OtcLog.log(LOG_TAG, "protectFd handler threw (swallowed): ${t.message}")

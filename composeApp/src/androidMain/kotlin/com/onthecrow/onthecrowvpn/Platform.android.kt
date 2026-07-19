@@ -22,8 +22,9 @@ class AndroidPlatform(
     init {
         AndroidVpnEnvironment.initialize(application)
         AndroidXrayEnvironment.initialize(application)
-        // TEMP (diagnosis): route common-code logs (worker, VM) into the unified file log.
+        // Route the common-code VPN logs (VpnSyncWorker, which owns live-tunnel config switches) into
+        // the same file log the service writes. Scoped to the tunnel — general app/UI logging
+        // deliberately does not go through here.
         DebugLog.setSink { tag, message -> OtcLog.log(tag, message) }
-        OtcLog.log("APP", "main process started — ${name}")
     }
 }

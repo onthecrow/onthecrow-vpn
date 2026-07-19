@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Quick Settings tile icon.
+
+  Deliberately NOT the adaptive launcher foreground: that asset reserves the outer third of its canvas
+  as the adaptive-icon safe zone, so its artwork covers only the inner ~66% and the tile rendered
+  visibly smaller than every other app's. Here the ring runs right to the viewport edge, which is the
+  largest the system will draw it.
+
+  Quick Settings tints tile icons by ALPHA and ignores their colour, so everything is opaque white and
+  the shape alone carries the image. No background disc, or the tile would tint into a solid blob.
+
+  Geometry follows the source logo (878x878, mask-composited). Reconstructed without <mask>, which
+  VectorDrawable has no equivalent for:
+   - the source ring is a r=605.5 circle stroked 440 wide (so it spans r 385.5..825.5) intersected with
+     the r=439 artboard disc, i.e. an annulus 385.5..439. Drawn directly as a r=412.25 circle stroked
+     53.5 wide, which is the same band without needing a clip — and antialiases cleanly, which a
+     clipped stroke would not.
+   - the bottom-left quadrant still needs clipping (it runs to x=-42, y=919 in the source). Its clip
+     radius is pulled in to 410 so the cut lands UNDER the ring and the seam is never visible.
+   - the crow path needs no clip at all: it peaks at r~354, well inside the ring.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="878"
+    android:viewportHeight="878">
+
+    <group>
+        <clip-path android:pathData="M439,29 a410,410 0 1,0 0,820 a410,410 0 1,0 0,-820 Z" />
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M-42,438.505C-41.9893,438.505 30.6344,438.2 52.5,438.505C52.5,556.505 146.5,677.505 288,536.005C299.672,545.943 308.696,552.013 317.652,560.168C293.628,580.979 245,619.499 245,619.499C245,619.499 291.8,587.742 323.898,566.248C326.533,568.993 329.213,572.029 332,575.505C191.5,716.005 336,823.505 440,823.505C440.316,844.957 440.001,919.334 440,919.505H-42V438.505Z" />
+    </group>
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M337.054,721.691C401.905,622.37 318.359,569.788 318.359,569.788C318.359,569.788 599.945,389.051 657.245,219.382C489.731,234.752 316.627,486.728 302.306,507.697C329.806,516.174 365.208,488.098 448.73,416.02C412.415,490.385 275.709,594.911 275.709,594.911L298.759,552.269C298.759,552.269 233.671,487.423 145.337,556.752C257.266,393.237 379.684,395.664 385.938,390.36C416.07,364.806 485.721,230.971 690.011,189.589C659.094,385.98 511.066,467.804 487.121,489.233C467.34,624.707 356.919,705.916 337.054,721.691Z" />
+
+    <path
+        android:pathData="M439,26.75 a412.25,412.25 0 1,0 0,824.5 a412.25,412.25 0 1,0 0,-824.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="53.5" />
+
+</vector>

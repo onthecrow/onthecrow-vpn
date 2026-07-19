@@ -11,6 +11,11 @@ import com.onthecrow.onthecrowvpn.xray.OtcLog
  * Carries [ConnectionStatus] from the VpnService (running in the ":vpn" process) to the controller in
  * the main process via an explicit, app-private broadcast. The in-process [AndroidVpnRuntime] StateFlow
  * is no longer shared across the process boundary, so the service publishes through this instead.
+ *
+ * Strictly one-way and best-effort: this is a UI mirror, nothing more. Recovery deliberately does NOT
+ * travel over it — the main process is usually dead while a VPN runs in the background, a
+ * runtime-registered receiver cannot start a process, and delivery to a merely-cached process was
+ * measured 39-68s late. The `:vpn` process recovers itself.
  */
 internal object VpnStatusBroadcast {
     private const val ACTION = "com.onthecrow.onthecrowvpn.vpn.STATUS"
@@ -43,14 +48,17 @@ internal object VpnStatusBroadcast {
                 onStatus(decode(intent.getIntExtra(EXTRA_CODE, CODE_DISCONNECTED), intent.getStringExtra(EXTRA_MESSAGE)))
             }
         }
-        val filter = IntentFilter(ACTION)
+        registerNotExported(context, receiver, IntentFilter(ACTION))
+        return receiver
+    }
+
+    private fun registerNotExported(context: Context, receiver: BroadcastReceiver, filter: IntentFilter) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             context.registerReceiver(receiver, filter)
         }
-        return receiver
     }
 
     private fun encode(status: ConnectionStatus): Pair<Int, String?> = when (status) {

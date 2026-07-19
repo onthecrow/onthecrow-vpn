@@ -5,7 +5,6 @@ import android.content.Context
 import android.os.Build
 import android.os.PowerManager
 import android.os.Process
-import android.util.Log
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
@@ -31,7 +30,6 @@ import java.util.concurrent.TimeUnit
  * Remove this (and every call site) once the Doze/network recovery is confirmed fixed.
  */
 object OtcLog {
-    private const val ANDROID_TAG = "OnthecrowVpn"
     private const val FILE_NAME = "vpn-debug.log"
 
     // Single writer thread: serializes appends, keeps file IO off caller threads, preserves order.
@@ -45,11 +43,18 @@ object OtcLog {
     private var writerResolved = false
     private var procTag: String? = null
 
-    /** Log one line. Cheap on the caller; the actual file write is queued to the writer thread. */
+    /**
+     * Log one line. Cheap on the caller; the actual file write is queued to the writer thread.
+     *
+     * Deliberately active in RELEASE builds too: a reconnect failure that only reproduces after hours
+     * of real-world use on a real network cannot be chased on a debug build, so the file has to be
+     * there when it happens. It stays scoped to the VPN service and libXray — general app logging does
+     * not go through here — and it writes only to the file, never to Logcat, so nothing is exposed to
+     * other apps or to the system log.
+     */
     fun log(tag: String, message: String) {
         val now = System.currentTimeMillis()
         val state = stateLabel()
-        Log.d(ANDROID_TAG, "[$tag] $message")
         runCatching {
             executor.execute {
                 val w = writerOrNull() ?: return@execute

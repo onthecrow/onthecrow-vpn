@@ -1,8 +1,12 @@
 package com.onthecrow.onthecrowvpn.vpn
 
+import android.app.ActivityManager
+import android.app.AlarmManager
+import android.app.ApplicationExitInfo
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -31,11 +35,13 @@ import com.onthecrow.onthecrowvpn.xray.OtcLog
 import com.onthecrow.onthecrowvpn.xray.PlatformXrayEngine
 import com.onthecrow.onthecrowvpn.xray.XrayConfigSanitizer
 import com.onthecrow.onthecrowvpn.xray.XrayRunResult
+import com.onthecrow.onthecrowvpn.xray.protectFdCount
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -43,7 +49,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.InetSocketAddress
 
 class OnthecrowVpnService : VpnService() {
     // CoroutineExceptionHandler catches anything that escapes the runCatching guards (so a thrown
@@ -57,12 +68,25 @@ class OnthecrowVpnService : VpnService() {
     private val sanitizer = XrayConfigSanitizer()
     private val operationMutex = Mutex()
 
-    // The tun interface, kept OPEN for the whole session so the virtual interface (and the OS routing
-    // of app traffic into it) survives Wi-Fi↔cell handovers — we never rebuild it on a network change,
-    // only re-dial xray. xray gets a *dup* of this fd ([xrayTunFd]) so it can be stopped/restarted
-    // without tearing the interface down.
+    // The tun interface, built once per process by [runConnect]. xray gets a *dup* of this fd
+    // ([xrayTunFd]). It lives and dies with the process — there is no path that tears it down and
+    // rebuilds it in place, because xray cannot actually be stopped in-process (see [stopXray]).
     private var tunInterface: ParcelFileDescriptor? = null
     private var xrayTunFd: Int? = null
+
+    // When the current tun was established. [probeTunnel] refuses to answer inside the grace window
+    // after it, because netd installs this VPN's per-UID routing rules asynchronously and a probe fired
+    // in that window leaves on the PHYSICAL network — answering "healthy" for a dead tunnel.
+    @Volatile
+    private var lastEstablishAt = 0L
+
+    // TEMP (diagnosis): the emitted xray config is dumped once per process, not on every re-dial.
+    @Volatile
+    private var runtimeJsonLogged = false
+
+    // Guards the recovery ladder: a second trigger while one is running is dropped rather than queued —
+    // the running ladder's own probes already observe the current state.
+    private val recovering = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // The config to refresh with while a tunnel is active (null when disconnected).
     @Volatile
@@ -89,9 +113,14 @@ class OnthecrowVpnService : VpnService() {
     private val mtu = 1500
 
     private var screenReceiver: BroadcastReceiver? = null
+    private var idleModeReceiver: BroadcastReceiver? = null
 
-    // Live screen state. A network change while the screen is OFF (Doze) does NOT trigger heavy recovery
-    // (battery); we only refresh the underlying network and let the next SCREEN_ON probe+recover.
+    // Signature of the current underlying link's properties, so a route change that keeps the same netId
+    // is still detected without reacting to routine DNS/MTU churn.
+    @Volatile
+    private var lastLinkSignature: String? = null
+
+    // Live screen state. It no longer gates recovery — only the keepalive cadence.
     @Volatile
     private var screenOn = true
 
@@ -110,6 +139,7 @@ class OnthecrowVpnService : VpnService() {
         // TEMP (diagnosis): route any common-code logs running in this process into the same file.
         DebugLog.setSink { tag, message -> OtcLog.log(tag, message) }
         logd("onCreate (:vpn process) sdk=${Build.VERSION.SDK_INT}")
+        logPreviousExitReasons()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -117,18 +147,26 @@ class OnthecrowVpnService : VpnService() {
         when (intent?.action) {
             ACTION_CONNECT -> {
                 startAsForeground()
-                val xrayJson = intent.getStringExtra(EXTRA_XRAY_JSON)
-                activeDisallow = intent.getStringArrayListExtra(EXTRA_DISALLOW).orEmpty()
-                activeAllow = intent.getStringArrayListExtra(EXTRA_ALLOW).orEmpty()
+                val fromIntent = intent.getStringExtra(EXTRA_XRAY_JSON)
+                // A recovery restart re-enters here carrying no payload (the PendingIntent was built
+                // before the kill, and this is a brand-new process with no in-memory state), so fall
+                // back to the persisted params — in a fresh process they ARE the source of truth.
+                val restored = if (fromIntent.isNullOrBlank()) paramsStore.load() else null
+                val xrayJson = fromIntent ?: restored?.xrayJson
+                activeDisallow = intent.getStringArrayListExtra(EXTRA_DISALLOW)
+                    ?: restored?.disallow ?: emptyList()
+                activeAllow = intent.getStringArrayListExtra(EXTRA_ALLOW)
+                    ?: restored?.allow ?: emptyList()
+                if (restored != null) logd("connect: restored persisted params after a recovery restart")
                 // Persist for crash self-heal (cleared on deliberate teardown / fatal failure).
                 if (!xrayJson.isNullOrBlank()) {
                     paramsStore.save(ConnectionParams(xrayJson, activeDisallow, activeAllow))
                 }
                 scope.launch { runConnect(xrayJson) }
             }
-            ACTION_DISCONNECT -> scope.launch { runDisconnect(stopService = true) }
+            ACTION_DISCONNECT -> scope.launch { runUserDisconnect() }
             // Remote revocation: same teardown as disconnect (Android has no persisted system profile).
-            ACTION_REVOKE -> scope.launch { runDisconnect(stopService = true) }
+            ACTION_REVOKE -> scope.launch { runUserDisconnect() }
             // intent == null (and so action == null): START_STICKY recreated us after a crash / system
             // kill. The in-memory config is gone, so self-heal from the persisted params. We MUST call
             // startForeground promptly (FGS start timeout), and a fresh process means a clean hysteria
@@ -150,93 +188,76 @@ class OnthecrowVpnService : VpnService() {
         return Service.START_STICKY
     }
 
-    // Called by the system when the VPN is torn down externally (user revokes it from system
-    // settings/Quick Settings, or another app's VPN takes over). Mirror that instead of leaving a
-    // stale "Connected" status.
+    /**
+     * The system tore the VPN down externally: the user revoked us in Settings/Quick Settings, or
+     * another VPN app took over. TERMINAL, never recoverable — our authorisation is gone, so retrying
+     * would only fight the user or the other app. Full teardown, params cleared.
+     */
     override fun onRevoke() {
-        logd("onRevoke (external teardown)")
-        scope.launch { runDisconnect(stopService = true) }
+        logd("onRevoke (external teardown) — terminal, not recoverable")
+        scope.launch { runUserDisconnect() }
     }
 
     override fun onDestroy() {
         logd("onDestroy")
         runBlocking { operationMutex.withLock { stopMonitoring(); stopTunnel() } }
+        unregisterMonitoring()
         scope.cancel()
         super.onDestroy()
     }
 
-    // restart=true is a transparent refresh (underlying-network change / wake from Doze): the VPN
-    // session and the Connected status are kept (no flicker, no permission re-prompt). Crucially we do
-    // NOT rebuild the tun interface — only re-dial xray over the new network. Rebuilding the tun via
-    // establish() during a Wi-Fi↔cell handover raced and left app traffic black-holed (no packets
-    // reached the new tun). Keeping the same tun keeps the OS app-routing stable; only xray's upstream
-    // sockets move. A refresh failure is non-fatal — the next network event recovers it.
-    private suspend fun runConnect(
-        xrayJson: String?,
-        restart: Boolean = false,
-        forceFullReconnect: Boolean = false,
-    ) {
+    // A FRESH establish: build a new tun and start xray. This is the ONLY way the tunnel ever comes up —
+    // a user connect, a crash self-heal, or a recovery restart, each in a brand-new process. There is
+    // no in-process path, because xray's tun readers outlive [stopXray] and would fight the new
+    // instance for packets.
+    private suspend fun runConnect(xrayJson: String?) {
         operationMutex.withLock {
             val configJson = xrayJson ?: activeXrayJson
-            logd(
-                "runConnect: restart=$restart forceFull=$forceFullReconnect " +
-                    "hasConfig=${!configJson.isNullOrBlank()} tunUp=${tunInterface != null} underlying=$lastUnderlying",
-            )
+            logd("runConnect: hasConfig=${!configJson.isNullOrBlank()} underlying=$lastUnderlying")
             if (configJson.isNullOrBlank()) {
                 fail("No validated configuration is available")
                 return
             }
             activeXrayJson = configJson
-            // Keep the VPN pinned to the current physical network so xray's protected sockets follow a
-            // Wi-Fi↔cell handover (dynamic — never pins to a dead link).
+            // Re-read the physical network from the system instead of trusting cached callback state
+            // (callbacks are dropped across Doze), then advertise it.
+            refreshUnderlyingFromSystem()
             applyUnderlyingNetworks(lastUnderlying)
-
-            // keepTun = soft re-dial. Currently every refresh (network change / Doze wake) passes
-            // forceFullReconnect=true, since only a full teardown + re-establish recovers (see
-            // scheduleFullReconnect); the soft path is kept for potential same-network quick refreshes.
-            val keepTun = restart && tunInterface != null && !forceFullReconnect
-            logd(if (keepTun) "re-dial: keep tun, restart xray only" else "connect: establishing tunnel")
+            logd("connect: establishing tunnel")
             runCatching {
-                if (keepTun) {
-                    stopXray()
-                } else {
-                    stopTunnel()
-                    AndroidVpnSocketProtector.setProtector(::protectSocket)
-                    tunInterface = Builder()
-                        .setSession("Onthecrow VPN")
-                        .setMtu(mtu)
-                        .addAddress("10.77.0.2", 32)
-                        .addRoute("0.0.0.0", 0)
-                        .addDnsServer("1.1.1.1")
-                        // NB: we deliberately do NOT exclude ourselves from the tunnel — our own traffic
-                        // routes through it so the health probe ([probeTunnel]) actually tests the tunnel.
-                        // No loop risk: xray's upstream sockets are protected individually via protectFd.
-                        // The underlying physical network is observed via the NOT_VPN NetworkRequest
-                        // callback (independent of our process routing), not via our default network.
-                        .apply { applySplitTunnel(this) }
-                        .establish()
-                        ?: error("Android refused to establish VPN interface")
-                    logd("tun established: fd=${tunInterface?.fd}")
-                }
-                // freshSession = a user-initiated connect (not a re-dial/recovery, which keep restart=true)
-                // → reset the xray.log only then, so all recovery attempts stay in one pullable file.
-                when (val result = startXrayOnTun(configJson, freshSession = !restart)) {
+                stopTunnel()
+                AndroidVpnSocketProtector.setProtector(::protectSocket)
+                tunInterface = Builder()
+                    .setSession("Onthecrow VPN")
+                    .setMtu(mtu)
+                    .addAddress(TUN_ADDRESS, 32)
+                    .addRoute("0.0.0.0", 0)
+                    .addDnsServer("1.1.1.1")
+                    // NB: we deliberately do NOT exclude ourselves from the tunnel — our own traffic
+                    // routes through it so the health probe ([probeTunnel]) actually tests the tunnel.
+                    // xray's upstream sockets are protected individually via protectFd (no loop risk).
+                    .apply { applySplitTunnel(this) }
+                    .establish()
+                    ?: error("Android refused to establish VPN interface")
+                // netd installs this VPN's per-UID routing rules asynchronously AFTER establish()
+                // returns; [probeTunnel] must not answer inside that window (see PROBE_ESTABLISH_GRACE_MS).
+                lastEstablishAt = SystemClock.elapsedRealtime()
+                logd("tun established: fd=${tunInterface?.fd}")
+                when (val result = startXrayOnTun(configJson)) {
                     XrayRunResult.Success -> {
                         VpnStatusBroadcast.send(this, ConnectionStatus.Connected)
-                        logd(if (keepTun) "re-dial: connected" else "connect: connected")
-                        if (!restart) startMonitoring()
+                        logd("connect: connected")
+                        startMonitoring()
                     }
-                    is XrayRunResult.Failure -> handleRunFailure(restart, result.message)
+                    is XrayRunResult.Failure -> fail(result.message)
                 }
             }.onFailure { error ->
-                // Don't swallow cancellation: if this coroutine (e.g. a recovery attempt) was cancelled
-                // mid-establish, propagate it instead of mislabelling it a "refresh failure" and pressing on.
                 if (error is CancellationException) {
-                    logd("runConnect CANCELLED (restart=$restart): ${error.message}")
+                    logd("runConnect CANCELLED: ${error.message}")
                     throw error
                 }
-                logd("runConnect FAILED (restart=$restart): ${error.stackTraceToString()}")
-                handleRunFailure(restart, error.message ?: "Failed to start VPN")
+                logd("runConnect FAILED: ${error.stackTraceToString()}")
+                fail(error.message ?: "Failed to start VPN")
             }
         }
     }
@@ -246,14 +267,14 @@ class OnthecrowVpnService : VpnService() {
      * stopped/restarted (on every re-dial) without ever closing the master [tunInterface] — the
      * virtual interface, and the OS routing of app traffic into it, stay up across the handover.
      */
-    private suspend fun startXrayOnTun(configJson: String, freshSession: Boolean): XrayRunResult {
+    private suspend fun startXrayOnTun(configJson: String): XrayRunResult {
         val master = tunInterface ?: return XrayRunResult.Failure("Tun interface is not established")
         val fd = master.dup().detachFd()
         xrayTunFd = fd
         xrayEngine.setTunFd(fd)
         // TEMP (diagnosis): verbose xray log into a pullable file. logLevel=debug surfaces the upstream
         // dial / hysteria QUIC reconnect chatter we need. Revert logLevel/errorLogPath when fixed.
-        val xrayLogPath = prepareXrayLogFile(reset = freshSession)
+        val xrayLogPath = prepareXrayLogFile()
         val runtimeJson = sanitizer.withTunInbound(
             configJson,
             mtu = mtu,
@@ -262,9 +283,21 @@ class OnthecrowVpnService : VpnService() {
         )
         // TEMP (diagnosis): fingerprint of the client credential actually handed to xray — verifies a
         // config switch really reaches the engine (per-client id/password/auth differ; prefix only).
-        val cred = Regex("\"(?:id|password|auth)\"\\s*:\\s*\"([^\"]+)\"")
-            .find(runtimeJson)?.groupValues?.get(1)
+        val cred = CREDENTIAL_REGEX.find(runtimeJson)?.groupValues?.get(2)
         logd("xray start: tunFd=$fd client-credential=${cred?.take(6) ?: "?"}… (xray.log loglevel=debug)")
+        // TEMP (diagnosis): dump the config we actually hand to xray, once per process, so the emitted
+        // transport settings can be checked against what we think we generated.
+        //
+        // Credentials are redacted. This log ships in release builds and lives in /Android/data, which
+        // the user and any MANAGE_EXTERNAL_STORAGE holder can read — writing a VLESS uuid or hysteria2
+        // password there in clear would hand over the account. Redaction costs nothing diagnostically:
+        // the question this answers is about transport settings, and the fingerprint line above still
+        // identifies WHICH config is live.
+        if (!runtimeJsonLogged) {
+            runtimeJsonLogged = true
+            val redacted = runtimeJson.replace(CREDENTIAL_REGEX) { m -> "${m.groupValues[1]}***\"" }
+            logd("xray runtimeJson (${runtimeJson.length}B): $redacted")
+        }
         val started = SystemClock.elapsedRealtime()
         val result = xrayEngine.start(runtimeJson)
         logd("xray start result: $result (${SystemClock.elapsedRealtime() - started}ms)")
@@ -279,9 +312,16 @@ class OnthecrowVpnService : VpnService() {
      * vpn-debug.log. [reset] only on a fresh user connect (not on re-dials/recoveries), so one whole
      * session — including every reconnect attempt — accumulates in one pullable file.
      */
-    private fun prepareXrayLogFile(reset: Boolean): String? = runCatching {
+    private fun prepareXrayLogFile(): String? = runCatching {
         File(getExternalFilesDir(null), "xray.log").apply {
-            if (reset) delete()
+            // Never reset on connect. The user's reflex after a failure is to reconnect manually, and
+            // that used to wipe the very window that needed explaining — an incident was diagnosable
+            // only from vpn-debug.log because xray's side had already been overwritten. Instead the
+            // file accumulates and is truncated only when it gets genuinely large.
+            if (length() > XRAY_LOG_MAX_BYTES) {
+                logd("xray.log exceeded ${XRAY_LOG_MAX_BYTES}B (${length()}B) — truncating")
+                delete()
+            }
             if (!exists()) {
                 parentFile?.mkdirs()
                 createNewFile()
@@ -289,7 +329,7 @@ class OnthecrowVpnService : VpnService() {
             // World-readable so adb shell / file managers can copy it (harmless if FUSE ignores chmod —
             // app-ownership from createNewFile() is what actually makes it pullable).
             runCatching { setReadable(true, false) }
-            logd("xray.log prepared: reset=$reset path=$absolutePath readable=${canRead()}")
+            logd("xray.log prepared: ${length()}B path=$absolutePath readable=${canRead()}")
         }.absolutePath
     }.getOrElse {
         logd("xray.log prepare FAILED: ${it.message}")
@@ -317,43 +357,49 @@ class OnthecrowVpnService : VpnService() {
         }
     }
 
-    /** Stop xray and close the dup tun fd it was using (we own it). The tun interface stays up. */
+    /**
+     * Stop xray.
+     *
+     * NB this does NOT fully stop it. `proxy/tun.Handler` has no Close method, the always-on inbound
+     * handler never closes `h.proxy`, and `AndroidTun.Close()` returns nil — so the gVisor reader
+     * goroutines keep reading the tun fd for the life of the PROCESS. Every caller of this must
+     * therefore end in process death; starting xray again in the same process gives you two stacks
+     * competing for one tun queue and roughly half the packets vanish. That is why recovery restarts
+     * the process instead of re-dialling in place.
+     *
+     * The dup'd fd is left open deliberately: closing it frees the fd number for the next `dup()`,
+     * and the surviving reader would then be reading an unrelated socket. It is reclaimed when the
+     * process dies, which is imminent by construction.
+     */
     private suspend fun stopXray() {
         val result = xrayEngine.stop()
-        logd("xray stop: $result (closing dupFd=$xrayTunFd)")
-        xrayTunFd?.let { fd -> runCatching { ParcelFileDescriptor.adoptFd(fd).close() } }
+        logd("xray stop: $result (dupFd=$xrayTunFd left open; readers die with the process)")
         xrayTunFd = null
     }
 
-    private fun handleRunFailure(restart: Boolean, message: String) {
-        if (restart) {
-            // Transient refresh failure (e.g. a mid-switch moment): keep the VPN session alive; the
-            // next underlying-network change or screen-on will recover it. Never tear down here.
-            logd("refresh failed, keeping VPN alive: $message")
-        } else {
-            fail(message)
-        }
-    }
-
-    private suspend fun runDisconnect(stopService: Boolean) {
+    /**
+     * Deliberate, terminal teardown: the user disconnected, or the VPN was revoked out from under us.
+     *
+     * The ONLY place that clears the persisted params — a recovery must never come through here, or it
+     * destroys its own fallback config. It also must never emit `Disconnected` on a recovery path:
+     * besides the above, that status drives `VpnSyncWorker` to reset its active key, so a genuine remote
+     * config change arriving mid-recovery would be silently swallowed.
+     */
+    private suspend fun runUserDisconnect() {
         operationMutex.withLock {
-            logd("runDisconnect: stopService=$stopService")
-            // Deliberate teardown: forget the persisted config so a later sticky restart does NOT
-            // resurrect a tunnel the user (or a revocation) intentionally stopped.
+            logd("runUserDisconnect")
             paramsStore.clear()
             VpnStatusBroadcast.send(this, ConnectionStatus.Disconnecting)
             stopMonitoring()
             stopTunnel()
             VpnStatusBroadcast.send(this, ConnectionStatus.Disconnected)
-            if (stopService) {
-                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                // Kill this ":vpn" process so xray-core's process-global hysteria connection pool is
-                // gone — the next connect starts a clean process and never reuses a stale QUIC session.
-                // Delay so the Disconnected broadcast above is dispatched first. stopSelf() already
-                // marked us stopped, so START_STICKY will NOT auto-restart this killed process.
-                scheduleProcessDeath()
-            }
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            // Kill this ":vpn" process so xray-core's process-global connection state is gone: with
+            // keepalive enabled a pool entry that is never re-dialled would otherwise stay alive
+            // forever. Delayed so the Disconnected broadcast above dispatches first; stopSelf() has
+            // already marked us stopped, so START_STICKY will not resurrect this kill.
+            scheduleProcessDeath()
         }
     }
 
@@ -377,13 +423,13 @@ class OnthecrowVpnService : VpnService() {
         tunInterface = null
     }
 
-    // ---- Resilience: one state machine guards tunnel health while the screen is on ----
+    // ---- Resilience: one state machine guards tunnel health ----
     //
-    // Both triggers (Doze/screen wake AND physical-network change) feed ONE job. It (optionally) recovers
-    // via escalating full re-establishes verified by a real end-to-end probe, then settles into a
-    // keepalive loop that re-enters recovery on silent death — so while the screen is on the tunnel is
-    // never left dead, and we don't guess (offFor/doze) — we probe the actual tunnel. Cancelled on
-    // screen-off / disconnect (no probing in Doze — battery; the next screen-on re-checks).
+    // Every trigger (validated network change, link-property change, Doze exit, screen on, keepalive
+    // failure) feeds ONE job, which either runs the recovery ladder (see [recover]) or settles into the
+    // keepalive loop that re-enters it on silent death. The job runs regardless of screen state — a
+    // handover while the screen is off is exactly the case that has to work — and is cancelled only on
+    // disconnect.
 
     private enum class TunnelStart {
         /** Just connected & known healthy — go straight to keepalive (don't re-probe immediately). */
@@ -406,13 +452,15 @@ class OnthecrowVpnService : VpnService() {
         logd("startTunnelJob: reason=$reason start=$start")
         tunnelJob = scope.launch {
             when (start) {
-                TunnelStart.FORCE_RECOVER -> recoverWithBackoff(reason)
+                // recover() kills the process if it proceeds; if it's debounced it returns and we fall
+                // through to keepAliveLoop so the (still-alive) process keeps watching.
+                TunnelStart.FORCE_RECOVER -> recover(reason)
                 TunnelStart.PROBE_FIRST -> {
                     if (probeTunnel(PROBE_TIMEOUT_MS)) {
                         logd("$reason: tunnel already healthy")
                     } else {
                         logd("$reason: tunnel dead on check — recovering")
-                        recoverWithBackoff(reason)
+                        recover(reason)
                     }
                 }
                 TunnelStart.KEEPALIVE_ONLY -> logd("$reason: starting keepalive watch")
@@ -422,42 +470,233 @@ class OnthecrowVpnService : VpnService() {
     }
 
     /**
-     * Escalating full re-establish until an end-to-end probe confirms health. Attempt 0 fires
-     * IMMEDIATELY (no pre-delay) — on a good network the first re-dial already succeeds in ~1-3s;
-     * later attempts back off ([recoveryDelayMs]: 1s/2s/4s) to let the radio/route settle. Each attempt
-     * re-queries the physical network ([refreshUnderlyingFromSystem]) since Doze can leave [lastUnderlying]
-     * stale. After [MAX_FAST_ATTEMPTS] we DON'T give up — we fall through to keepalive, which re-triggers
-     * recovery on the next probe failure.
+     * The recovery ladder. Runs ENTIRELY inside this `:vpn` process.
+     *
+     * It never asks the main process for anything: for a backgrounded VPN the main process is normally
+     * dead (measured: a 35-minute gap with the tunnel up), a runtime-registered receiver cannot start a
+     * process, and even when it was merely cached, broadcasts to it were delivered 39-68s late. Routing
+     * recovery through it was three stacked ways to fail.
+     *
+     *   T0  refresh the underlying network + probe   ~50ms-1.3s   is it actually dead?
+     *   T1  restart the process                      ~1.2-2s      the only repair that works
+     *
+     * There is deliberately NO in-process repair tier. Stopping xray does not stop its tun readers:
+     * `proxy/tun.Handler` has no Close method, the always-on inbound handler never closes `h.proxy`,
+     * and `AndroidTun.Close()` returns nil — so the gVisor reader goroutines sit in
+     * `BlockingReadvUntilStopped` for the life of the process. A dup'd fd shares one open file
+     * description, hence one tun queue with a single consumer, so a second xray instance does not get
+     * its own copy of the packets: it splits them with the abandoned stack, roughly evenly. Half the
+     * traffic disappears. A probe still squeaks through often enough to look healthy, which is exactly
+     * how this presented in the field. Only process death clears those goroutines.
+     *
+     * Runs NonCancellable under [operationMutex] with a wakelock held: a recovery interrupted halfway
+     * (by a screen event, a competing trigger, or CPU suspend) leaves the tunnel worse off than one
+     * that never started.
      */
-    private suspend fun recoverWithBackoff(reason: String) {
-        var attempt = 0
-        while (attempt < MAX_FAST_ATTEMPTS) {
-            if (activeXrayJson == null) return
-            val delayMs = recoveryDelayMs(attempt)
-            if (delayMs > 0) delay(delayMs)
-            if (activeXrayJson == null) return
-            refreshUnderlyingFromSystem()
-            attempt++
-            logd("recover ($reason) attempt $attempt/$MAX_FAST_ATTEMPTS: underlying=$lastUnderlying")
-            runConnect(xrayJson = null, restart = true, forceFullReconnect = true)
-            if (awaitTunnelHealthy(HEALTH_WINDOW_MS)) {
-                logd("recover ($reason): tunnel healthy — done")
+    private suspend fun recover(reason: String) {
+        if (activeXrayJson == null) return
+        if (!recovering.compareAndSet(false, true)) {
+            logd("recover($reason): a recovery is already running — ignored")
+            return
+        }
+        val wakeLock = acquireRecoveryWakeLock()
+        try {
+            withContext(NonCancellable) {
+                operationMutex.withLock { runLadder(reason) }
+            }
+        } finally {
+            recovering.set(false)
+            runCatching { if (wakeLock?.isHeld == true) wakeLock.release() }
+        }
+    }
+
+    private suspend fun runLadder(reason: String) {
+        val started = SystemClock.elapsedRealtime()
+        val fdAtStart = protectFdCount.get()
+        fun elapsed() = SystemClock.elapsedRealtime() - started
+        fun fdDelta() = protectFdCount.get() - fdAtStart
+        logd(
+            "recover($reason): START screenOn=$screenOn protectFd=$fdAtStart " +
+                "batteryOptIgnored=${isIgnoringBatteryOptimizations()}",
+        )
+
+        // T0 — the trigger may have fired before the new link could carry traffic, or we may have slept
+        // through the change entirely. Re-read the system, re-advertise it, then ask the tunnel itself.
+        // Probed more than once because the only repair available costs a window of unprotected
+        // traffic: a single blip on a lossy link must not buy one.
+        refreshUnderlyingFromSystem()
+        applyUnderlyingNetworks(lastUnderlying)
+        repeat(T0_PROBE_ATTEMPTS) { attempt ->
+            if (probeTunnel(PROBE_TIMEOUT_MS)) {
+                logd("recover($reason): T0 OK — alive after ${elapsed()}ms protectFdDelta=${fdDelta()}")
+                onRecoverySucceeded()
                 return
             }
-            logd("recover ($reason) attempt $attempt: not healthy")
+            if (attempt < T0_PROBE_ATTEMPTS - 1) delay(T0_PROBE_RETRY_DELAY_MS)
         }
-        logd("recover ($reason): fast attempts exhausted — keepalive keeps watching")
+
+        logd("recover($reason): T0 dead (${elapsed()}ms) → T1 process restart")
+        restartProcessForRecovery(reason)
+    }
+
+    /** Only a CONFIRMED probe counts as success — that is what resets the cross-process restart budget. */
+    private fun onRecoverySucceeded() {
+        runCatching {
+            recoveryPrefs().edit()
+                .putInt(KEY_RESTART_GEN, 0)
+                .putLong(KEY_LAST_RECOVERY_OK_AT, SystemClock.elapsedRealtime())
+                .commit()
+        }
+        VpnStatusBroadcast.send(this, ConnectionStatus.Connected)
     }
 
     /**
-     * While the screen is on, probe the tunnel every [KEEPALIVE_INTERVAL_MS]; the probe doubles as a real
-     * upstream keepalive. Two consecutive failures (one blip is tolerated) re-enter recovery. Exits when
-     * the job is cancelled (screen-off / disconnect) — delay() is the cancellation point.
+     * T1: restart this process, because only a fresh one actually stops xray — its tun readers and
+     * process-global connection state.
+     *
+     * The restart is carried by an alarm holding a PendingIntent aimed explicitly at this service, so
+     * it lands straight back in `:vpn` — no receiver hop, no main-process cold start, no dependence on
+     * the main process existing. ORDER BELOW IS LOAD-BEARING.
+     */
+    private fun restartProcessForRecovery(reason: String) {
+        val configJson = activeXrayJson
+        if (configJson == null) {
+            logd("T1 restart: no active config — standing down rather than restarting")
+            return
+        }
+        val prefs = recoveryPrefs()
+        val sinceLast = SystemClock.elapsedRealtime() - prefs.getLong(KEY_LAST_RESTART_AT, 0L)
+        // The generation counter is persisted (and commit()ed) because it must survive the kill —
+        // otherwise every fresh process starts with a clean slate and hot-loops against a server that
+        // is simply down. `in 0L until` also handles elapsedRealtime resetting at reboot.
+        val recent = sinceLast in 0L until RESTART_BACKOFF_RESET_MS
+        val generation = if (recent) prefs.getInt(KEY_RESTART_GEN, 0) + 1 else 1
+        if (generation > MAX_RESTART_GENERATIONS) {
+            logd("T1 restart: budget spent (gen=$generation, ${sinceLast}ms since last) — surfacing error")
+            fail("Could not restore the VPN connection")
+            return
+        }
+
+        // 1. Persist FIRST: this process is about to be SIGKILLed. commit(), never apply().
+        paramsStore.save(ConnectionParams(configJson, activeDisallow, activeAllow))
+        runCatching {
+            prefs.edit()
+                .putInt(KEY_RESTART_GEN, generation)
+                .putLong(KEY_LAST_RESTART_AT, SystemClock.elapsedRealtime())
+                .commit()
+        }
+
+        // 2. Schedule the restart while we are still alive to schedule it. ELAPSED_REALTIME_WAKEUP, not
+        //    RTC: an RTC alarm moves when NTP corrects the clock after a Doze exit.
+        val restartIntent = Intent(this, OnthecrowVpnService::class.java).setAction(ACTION_CONNECT)
+        val pending = PendingIntent.getForegroundService(
+            this,
+            REQ_RESTART,
+            restartIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val at = SystemClock.elapsedRealtime() + RESTART_DELAY_MS
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val exact = runCatching {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pending)
+            true
+        }.getOrElse { error ->
+            logd("T1 restart: exact alarm refused (${error.message}) — falling back to inexact")
+            runCatching { alarmManager.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, pending) }
+            false
+        }
+        logd(
+            "T1 restart: reason=$reason gen=$generation exactAlarm=$exact in ${RESTART_DELAY_MS}ms " +
+                "batteryOptIgnored=${isIgnoringBatteryOptimizations()}",
+        )
+
+        // 3. stopSelf() BEFORE the kill, so AMS does not also schedule a START_STICKY restart racing our
+        //    alarm for the same component (that path carries an escalating ×4 backoff). A restart we did
+        //    NOT plan — an xray panic — still gets the sticky restart, which is the net we want.
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        OtcLog.flushBlocking()
+        Process.killProcess(Process.myPid())
+    }
+
+    private fun acquireRecoveryWakeLock(): PowerManager.WakeLock? = runCatching {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG).apply {
+            setReferenceCounted(false)
+            acquire(RECOVERY_WAKELOCK_TIMEOUT_MS)
+        }
+    }.getOrElse {
+        logd("recovery wakelock unavailable: ${it.message}")
+        null
+    }
+
+    // Load-bearing for three separate grants (exact-alarm eligibility, allow-while-idle quota exemption,
+    // and the background foreground-service start). A silent revocation changes the whole failure mode,
+    // so every recovery records it.
+    private fun isIgnoringBatteryOptimizations(): Boolean = runCatching {
+        (getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName)
+    }.getOrDefault(false)
+
+    /**
+     * Why did the PREVIOUS `:vpn` process die?
+     *
+     * A silent process death is invisible in our own log — the last line simply stops — and it is the
+     * worst failure we have: the kernel closes the tun along with the process, so traffic leaves in the
+     * clear while the UI still shows Connected. A dying process cannot report its own death, so the
+     * next one reads it from the system here.
+     *
+     * The reason is the whole diagnosis. CRASH_NATIVE points at libXray/Go; LOW_MEMORY or SIGNALED at
+     * the low-memory killer or an OEM policy kill; EXIT_SELF at our own [scheduleProcessDeath].
+     */
+    private fun logPreviousExitReasons() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        runCatching {
+            val manager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            manager.getHistoricalProcessExitReasons(packageName, /* pid = */ 0, EXIT_REASONS_TO_LOG)
+                .filter { it.processName.endsWith(VPN_PROCESS_SUFFIX) }
+                .forEach { info ->
+                    logd(
+                        "previous :vpn exit: pid=${info.pid} reason=${exitReasonLabel(info.reason)} " +
+                            "status=${info.status} importance=${info.importance} rssKb=${info.rss} " +
+                            "at=${info.timestamp} desc=${info.description}",
+                    )
+                }
+        }.onFailure { logd("previous :vpn exit: unavailable (${it.message})") }
+    }
+
+    private fun exitReasonLabel(reason: Int): String = when (reason) {
+        ApplicationExitInfo.REASON_ANR -> "ANR"
+        ApplicationExitInfo.REASON_CRASH -> "CRASH_JVM"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE"
+        ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INIT_FAILURE"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+        ApplicationExitInfo.REASON_OTHER -> "OTHER"
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+        ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+        else -> "UNKNOWN($reason)"
+    }
+
+    private fun recoveryPrefs() = getSharedPreferences(RECOVERY_PREFS, Context.MODE_PRIVATE)
+
+    /**
+     * Probe the tunnel on a cadence; the probe doubles as a real upstream keepalive. Two consecutive
+     * failures (one blip is tolerated) re-enter recovery. Exits when the job is cancelled (disconnect)
+     * — delay() is the cancellation point.
+     *
+     * The loop keeps running with the screen off, just slower. It is best-effort by construction —
+     * `delay()` rides CLOCK_MONOTONIC and does not advance while the CPU is suspended — and that is the
+     * point: it bounds the dead window at ~[KEEPALIVE_INTERVAL_SCREEN_OFF_MS] of AWAKE time instead of
+     * "until the user unlocks".
      */
     private suspend fun keepAliveLoop() {
         var fails = 0
         while (true) {
-            delay(KEEPALIVE_INTERVAL_MS)
+            delay(if (screenOn) KEEPALIVE_INTERVAL_MS else KEEPALIVE_INTERVAL_SCREEN_OFF_MS)
             if (activeXrayJson == null) return
             if (probeTunnel(PROBE_TIMEOUT_MS)) {
                 fails = 0
@@ -466,136 +705,115 @@ class OnthecrowVpnService : VpnService() {
                 logd("keepalive: probe failed ($fails/$KEEPALIVE_FAILS_BEFORE_RECOVER)")
                 if (fails >= KEEPALIVE_FAILS_BEFORE_RECOVER) {
                     fails = 0
-                    recoverWithBackoff("keepalive")
+                    recover("keepalive")
                 }
             }
         }
     }
 
     /**
-     * Suspend until a real end-to-end probe through the tunnel succeeds ([probeTunnel]) or [windowMs]
-     * elapses. A healthy upstream answers in <1s; a wedged one hangs — so this distinguishes a working
-     * re-establish from a dead one without trusting NET_CAPABILITY_VALIDATED (which Android reports
-     * optimistically for VPNs — observed "validated after 1ms" while no traffic flowed).
-     */
-    private suspend fun awaitTunnelHealthy(windowMs: Long): Boolean {
-        val start = SystemClock.elapsedRealtime()
-        val deadline = start + windowMs
-        var probes = 0
-        while (SystemClock.elapsedRealtime() < deadline) {
-            probes++
-            if (probeTunnel(PROBE_TIMEOUT_MS)) {
-                logd("tunnel probe OK after ${SystemClock.elapsedRealtime() - start}ms ($probes probes)")
-                return true
-            }
-            delay(PROBE_GAP_MS)
-        }
-        logd("tunnel probe FAILED ($probes probes / ${windowMs}ms)")
-        return false
-    }
-
-    /**
-     * Real END-TO-END health check via a DNS query over the tunnel: send a UDP DNS A-query to
-     * 1.1.1.1:53 and require ANY datagram back. UDP has no local handshake (so — unlike a TCP connect,
-     * which xray's tun completes locally — a reply can ONLY arrive if traffic genuinely round-tripped
-     * through the upstream). It also avoids the old false-negative: the previous TCP-to-1.1.1.1:80 probe
-     * reported "dead" whenever Cloudflare RST'd plain port 80, even though the round-trip had worked.
+     * Real END-TO-END health check: a DNS A-query to [PROBE_DNS_SERVER]:53 that must round-trip through
+     * the tunnel. UDP has no local handshake, so — unlike a TCP connect, which xray's tun completes
+     * locally — a valid reply can only arrive if traffic genuinely reached the upstream and came back.
+     *
+     * Three things make the verdict trustworthy, and all three are load-bearing (the previous version
+     * had none of them and reported dead tunnels as healthy):
+     *  - `connect()` forces the kernel to pick the source address NOW, from the route the datagram will
+     *    actually take. Asserting `localAddress == TUN_ADDRESS` is the only way to know the probe went
+     *    through the tun rather than escaping onto the physical network.
+     *  - the reply's DNS transaction id and QR bit are verified, so a stray datagram can't count as a pass.
+     *  - a probe issued inside [PROBE_ESTABLISH_GRACE_MS] of establish() is delayed, not answered: netd
+     *    installs the per-UID rules asynchronously, and probes fired in that window egress physically.
      *
      * The socket is intentionally NOT protected — its traffic must traverse the tun (we don't exclude
      * ourselves), which is exactly what we're testing. Literal IP, no DNS resolution of the target.
      */
-    private fun probeTunnel(timeoutMs: Int): Boolean {
+    private suspend fun probeTunnel(timeoutMs: Int): Boolean {
+        val sinceEstablish = SystemClock.elapsedRealtime() - lastEstablishAt
+        if (sinceEstablish < PROBE_ESTABLISH_GRACE_MS) {
+            delay(PROBE_ESTABLISH_GRACE_MS - sinceEstablish)
+        }
+        return withContext(Dispatchers.IO) { probeTunnelBlocking(timeoutMs) }
+    }
+
+    private fun probeTunnelBlocking(timeoutMs: Int): Boolean {
+        val started = SystemClock.elapsedRealtime()
         return runCatching {
-            java.net.DatagramSocket().use { socket ->
+            DatagramSocket().use { socket ->
+                socket.connect(InetSocketAddress(InetAddress.getByName(PROBE_DNS_SERVER), 53))
+                val local = socket.localAddress?.hostAddress
+                if (local != TUN_ADDRESS) {
+                    logd("probe: NOT on tun — localAddress=$local expected=$TUN_ADDRESS; verdict=dead")
+                    return@use false
+                }
                 socket.soTimeout = timeoutMs
-                val query = buildDnsQuery("cloudflare.com", PROBE_DNS_TXID)
-                val target = java.net.InetSocketAddress(java.net.InetAddress.getByName("1.1.1.1"), 53)
-                socket.send(java.net.DatagramPacket(query, query.size, target))
-                val response = java.net.DatagramPacket(ByteArray(512), 512)
+                val query = buildDnsQuery(PROBE_DNS_NAME, PROBE_DNS_TXID)
+                socket.send(DatagramPacket(query, query.size))
+                val response = DatagramPacket(ByteArray(512), 512)
                 socket.receive(response) // throws SocketTimeoutException if nothing comes back
-                response.length > 0
+                val data = response.data
+                val txid = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+                val isReply = (data[2].toInt() and 0x80) != 0
+                val ok = response.length >= DNS_HEADER_SIZE && txid == PROBE_DNS_TXID && isReply
+                val ms = SystemClock.elapsedRealtime() - started
+                if (ok) {
+                    logd("probe OK localAddress=$local ${ms}ms")
+                } else {
+                    logd("probe: bogus reply len=${response.length} txid=0x${txid.toString(16)} qr=$isReply ${ms}ms")
+                }
+                ok
             }
-        }.getOrElse { false }
-    }
-
-    /**
-     * Re-query the live physical (NOT_VPN) network straight from the system and update [lastUnderlying]
-     * if it went stale. This is the core of the Doze hypothesis: during Doze the network callback is
-     * frozen, so if the cellular radio re-attaches as a *new* Network we never get the [onAvailable] and
-     * keep binding sockets to a dead handle. We scan allNetworks for the physical link, because now that
-     * we route through the VPN, activeNetwork reports the VPN — not the underlying network.
-     */
-    private fun refreshUnderlyingFromSystem() {
-        val fresh = queryActiveUnderlying()
-        when {
-            fresh == null ->
-                logd("underlying refresh: no active NOT_VPN network (keeping $lastUnderlying)")
-            fresh != lastUnderlying -> {
-                logd("underlying refresh: STALE $lastUnderlying -> $fresh")
-                lastUnderlying = fresh
-                applyUnderlyingNetworks(fresh)
-            }
-            else -> logd("underlying refresh: unchanged ($lastUnderlying)")
+        }.getOrElse { error ->
+            logd("probe: no answer in ${SystemClock.elapsedRealtime() - started}ms (${error.javaClass.simpleName})")
+            false
         }
-    }
-
-    /** The current physical (NOT_VPN + INTERNET) network, preferring a validated one. */
-    private fun queryActiveUnderlying(): Network? {
-        val cm = connectivityManager()
-        val networks = runCatching { cm.allNetworks }.getOrNull() ?: return null
-        var fallback: Network? = null
-        for (n in networks) {
-            val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue
-            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
-            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return n
-            if (fallback == null) fallback = n
-        }
-        return fallback
     }
 
     private fun startMonitoring() {
-        underlyingSeeded = false
-        lastUnderlying = null
         // Usually screen-on (user-initiated connect), but a crash self-heal can reconnect while in Doze.
         screenOn = runCatching {
             (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
         }.getOrDefault(true)
         registerUnderlyingNetworkCallback()
         registerScreenReceiver()
-        // Begin keepalive watching only while the screen is on (battery); SCREEN_ON resumes it otherwise.
-        if (screenOn) {
-            startTunnelJob("connected", TunnelStart.KEEPALIVE_ONLY)
-        } else {
-            logd("connected while screen off — keepalive deferred to screen-on")
-        }
+        registerIdleModeReceiver()
+        startTunnelJob("connected", TunnelStart.KEEPALIVE_ONLY)
     }
 
+    /**
+     * Stop watching the tunnel. The network callback is deliberately NOT unregistered here — it is
+     * registered once per process and released only in [onDestroy]. Cycling it per connect leaked
+     * registrations (the unregister failure was swallowed) against AOSP's hard cap of 100 concurrent
+     * NetworkRequests per UID, which a long-lived `:vpn` process doing in-process recovery can reach.
+     */
     private fun stopMonitoring() {
         tunnelJob?.cancel()
         tunnelJob = null
+        activeXrayJson = null
+    }
+
+    private fun unregisterMonitoring() {
         networkCallback?.let { cb -> runCatching { connectivityManager().unregisterNetworkCallback(cb) } }
         networkCallback = null
         underlyingSeeded = false
         lastUnderlying = null
-        activeXrayJson = null
         screenReceiver?.let { runCatching { unregisterReceiver(it) } }
         screenReceiver = null
+        idleModeReceiver?.let { runCatching { unregisterReceiver(it) } }
+        idleModeReceiver = null
     }
 
-    // The tunnel job lives only while the screen is on: SCREEN_ON (re)starts it (probe-first — recover if
-    // Doze/idle killed the upstream), SCREEN_OFF cancels it (no probing in Doze — battery). A quick toggle
-    // is a no-op because the first probe just passes. No offFor/doze heuristic — we check the real tunnel.
+    // Screen state no longer gates recovery — a handover with the screen off is exactly the case that has
+    // to work, and the user must find a live tunnel the instant they unlock. Screen state only sets the
+    // keepalive cadence (see [keepAliveLoop]); SCREEN_ON additionally forces an immediate check.
     private fun registerScreenReceiver() {
         if (screenReceiver != null) return
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
                     Intent.ACTION_SCREEN_OFF -> {
-                        logd("screen off — pausing tunnel watcher")
+                        logd("screen off — keepalive slowing to ${KEEPALIVE_INTERVAL_SCREEN_OFF_MS}ms")
                         screenOn = false
-                        tunnelJob?.cancel()
-                        tunnelJob = null
                     }
                     Intent.ACTION_SCREEN_ON -> {
                         logd("screen on — checking tunnel")
@@ -611,6 +829,63 @@ class OnthecrowVpnService : VpnService() {
         }
         runCatching { registerReceiver(receiver, filter) }
         screenReceiver = receiver
+    }
+
+    /**
+     * Doze exit — the REAL wake signal, and it fires without the screen ever turning on. SCREEN_ON is
+     * only a proxy for it and is kept as a fast path. While dozing, network callbacks are provably
+     * missed (the field logs show the underlying network changing with no callback at all), so the
+     * first thing this does is re-read the truth from the system rather than trust cached state.
+     */
+    private fun registerIdleModeReceiver() {
+        if (idleModeReceiver != null) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val idle = runCatching {
+                    (getSystemService(Context.POWER_SERVICE) as PowerManager).isDeviceIdleMode
+                }.getOrDefault(false)
+                logd("device idle mode changed: idle=$idle")
+                if (!idle) {
+                    refreshUnderlyingFromSystem()
+                    startTunnelJob("idle exit", TunnelStart.PROBE_FIRST)
+                }
+            }
+        }
+        val filter = IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+        runCatching { registerReceiver(receiver, filter) }
+        idleModeReceiver = receiver
+    }
+
+    /**
+     * Re-query the current physical underlying network straight from ConnectivityManager.
+     *
+     * This is a DETECTOR, not a routing fix (`setUnderlyingNetworks` writes NetworkAgent metadata and
+     * routes nothing). Callbacks are demonstrably dropped across Doze — the field logs show the
+     * underlying network having silently moved with no `onAvailable` ever delivered — so every recovery
+     * and every idle-exit re-reads the truth instead of trusting cached callback state.
+     *
+     * `activeNetwork` is useless here because we ARE the VPN and it reports our own tun; scan every
+     * network for a non-VPN one with INTERNET, preferring a VALIDATED one.
+     */
+    private fun refreshUnderlyingFromSystem(): Network? {
+        val cm = connectivityManager()
+        @Suppress("DEPRECATION")
+        val all = runCatching { cm.allNetworks.toList() }.getOrDefault(emptyList())
+        val candidates = all.mapNotNull { net ->
+            val caps = runCatching { cm.getNetworkCapabilities(net) }.getOrNull() ?: return@mapNotNull null
+            val usable = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            if (!usable) null else net to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
+        val best = candidates.firstOrNull { it.second }?.first ?: candidates.firstOrNull()?.first
+        if (best != lastUnderlying) {
+            logd("underlying refresh: STALE $lastUnderlying -> $best")
+            lastUnderlying = best
+            underlyingSeeded = best != null
+            applyUnderlyingNetworks(best)
+        }
+        return best
     }
 
     private fun capsLabel(network: Network): String {
@@ -639,9 +914,9 @@ class OnthecrowVpnService : VpnService() {
      * boundary back into Go and can crash the `:vpn` process.
      *
      * We deliberately do NOT call `Network.bindSocket()` anymore: it threw EPERM constantly after a
-     * Wi-Fi↔cell handover / Doze exit (black-holing the upstream → failed recovery). Following the live
-     * network is handled by `protect()` + [applyUnderlyingNetworks] (setUnderlyingNetworks) together with
-     * the FULL xray restart every recovery does — fresh protected sockets use the current default network.
+     * Wi-Fi↔cell handover / Doze exit (black-holing the upstream → failed recovery). A protected socket
+     * follows the system default network on its own, so a socket created AFTER a handover is already on
+     * the new link — which is why recovery is about replacing sockets, not about re-binding them.
      */
     private fun protectSocket(fd: Int): Boolean {
         val protectedOk = runCatching { protect(fd) }.getOrElse {
@@ -652,9 +927,13 @@ class OnthecrowVpnService : VpnService() {
     }
 
     /**
-     * Tell the system which physical network the VPN currently runs over, so protected sockets follow
-     * it across a Wi-Fi↔cell handover. `null` falls back to the system default. Updated dynamically on
-     * every network change, so it never pins to a dead link.
+     * Declare which physical network this VPN currently runs over.
+     *
+     * NB this ROUTES NOTHING. It writes NetworkAgent metadata only — transports, metered/roaming/
+     * suspended flags, bandwidth, NetworkStats attribution, and what apps behind the VPN see from
+     * `getActiveNetworkInfo()`. It sets no fwmark and touches no routing table: a `protect()`ed socket
+     * follows the SYSTEM DEFAULT network, always. We keep it accurate so accounting and the apps behind
+     * us are told the truth, not because it repairs anything.
      */
     private fun applyUnderlyingNetworks(network: Network?) {
         runCatching { setUnderlyingNetworks(network?.let { arrayOf(it) }) }
@@ -674,35 +953,48 @@ class OnthecrowVpnService : VpnService() {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 logd("net onAvailable: $network ${capsLabel(network)}")
+                // Seeding only. Deliberately NOT a recovery trigger: cellular typically appears
+                // unvalidated and validates 1-3s later, so re-dialling here burns the attempt on a link
+                // that cannot yet carry the QUIC handshake. onCapabilitiesChanged(VALIDATED) is the
+                // real signal.
                 if (!underlyingSeeded) {
                     underlyingSeeded = true
                     lastUnderlying = network
                     applyUnderlyingNetworks(network)
                     logd("underlying seeded: $network")
-                    return
-                }
-                if (network != lastUnderlying) {
-                    logd("underlying changed: $lastUnderlying -> $network")
-                    lastUnderlying = network
-                    applyUnderlyingNetworks(network)
-                    // Screen on: recover now. Screen off (Doze): just keep the underlying network fresh
-                    // and defer heavy recovery to the next SCREEN_ON (battery) — PROBE_FIRST will catch it.
-                    if (screenOn) {
-                        startTunnelJob("network change", TunnelStart.FORCE_RECOVER)
-                    } else {
-                        logd("network change while screen off — deferring recovery to screen-on")
-                    }
                 }
             }
 
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return
+                if (network == lastUnderlying) return
+                logd("underlying changed (validated): $lastUnderlying -> $network ${transportLabel(caps)}")
+                lastUnderlying = network
+                underlyingSeeded = true
+                applyUnderlyingNetworks(network)
+                startTunnelJob("network change", TunnelStart.FORCE_RECOVER)
+            }
+
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
-                logd("net linkProps: $network ifc=${lp.interfaceName}")
+                if (network != lastUnderlying) return
+                // The only signal for a route change that KEEPS the netId — Wi-Fi reassociation, an IPv6
+                // prefix change, an inter-RAT handover. None of these fire onAvailable/onCapabilities,
+                // so before this they produced no recovery at all. Compare a signature so the routine
+                // DNS//MTU churn on a stable link doesn't restart the watcher on every callback.
+                val signature = "${lp.interfaceName}|${lp.linkAddresses}|${lp.routes.size}"
+                if (signature == lastLinkSignature) return
+                logd("net linkProps changed on current underlying: $lastLinkSignature -> $signature")
+                lastLinkSignature = signature
+                startTunnelJob("link properties changed", TunnelStart.PROBE_FIRST)
             }
 
             override fun onLost(network: Network) {
                 logd("net onLost: $network")
+                // Stop advertising a dead link, but do NOT null lastUnderlying: a Wi-Fi flap would then
+                // read as a change on the way back and trigger a full recovery for a network that never
+                // actually changed. The next VALIDATED network sets the new value.
                 if (network == lastUnderlying) {
-                    lastUnderlying = null
+                    applyUnderlyingNetworks(null)
                 }
             }
         }
@@ -792,26 +1084,72 @@ class OnthecrowVpnService : VpnService() {
         const val EXTRA_DISALLOW = "com.onthecrow.onthecrowvpn.vpn.EXTRA_DISALLOW"
         const val EXTRA_ALLOW = "com.onthecrow.onthecrowvpn.vpn.EXTRA_ALLOW"
         private const val TAG = "OnthecrowVpn"
+
+        // Group 1 is the key and opening quote (kept, so a redaction can splice a placeholder in),
+        // group 2 the secret itself (used only for a short fingerprint, never logged whole).
+        private val CREDENTIAL_REGEX = Regex("(\"(?:id|password|auth)\"\\s*:\\s*\")([^\"]+)\"")
         private const val CHANNEL_ID = "vpn_connection"
         private const val NOTIFICATION_ID = 1001
 
         // Grace before killing the ":vpn" process on disconnect, so the Disconnected broadcast dispatches.
         private const val PROCESS_DEATH_DELAY_MS = 300L
 
-        // Per-attempt recovery cadence lives in commonMain (recoveryDelayMs / MAX_FAST_ATTEMPTS) so it's
-        // unit-testable: attempt 0 fires immediately, then 1s/2s/4s.
+        private const val RECOVERY_PREFS = "vpn_recovery"
+        private const val KEY_LAST_RECOVERY_OK_AT = "last_recovery_ok_at"
 
-        // How long to keep probing the tunnel after a re-establish before deciding the attempt failed
-        // and escalating. A healthy upstream (DNS) answers <1s; a wedged one hangs. Each probe blocks up
-        // to PROBE_TIMEOUT_MS. Tunable.
-        private const val HEALTH_WINDOW_MS = 3_000L
-        private const val PROBE_TIMEOUT_MS = 1_500
-        private const val PROBE_GAP_MS = 500L
+        // Restart backoff has to survive the kill, or each fresh process starts clean and hot-loops against a
+        // server that is simply down. Reset once a restart is this old, or on any confirmed recovery.
+        private const val KEY_RESTART_GEN = "restart_generation"
+        private const val KEY_LAST_RESTART_AT = "last_restart_at"
+        private const val MAX_RESTART_GENERATIONS = 3
+        private const val RESTART_BACKOFF_RESET_MS = 60_000L
+        private const val REQ_RESTART = 1
+
+        // Non-zero so the process actually dies before the alarm fires: an alarm delivered into a
+        // still-terminating process can be dropped, and a LOST restart is an unbounded leak, whereas
+        // this delay is a bounded one. Err long, not short.
+        private const val RESTART_DELAY_MS = 500L
+
+        // Big enough to hold several sessions plus the incident that follows them, small enough to
+        // send in a message.
+        private const val XRAY_LOG_MAX_BYTES = 8L * 1024 * 1024
+
+        private const val VPN_PROCESS_SUFFIX = ":vpn"
+        private const val EXIT_REASONS_TO_LOG = 5
+
+        private const val WAKELOCK_TAG = "OnthecrowVPN:recovery"
+        private const val RECOVERY_WAKELOCK_TIMEOUT_MS = 20_000L
+
+        // T0 asks the tunnel twice before condemning it: the only repair is a process restart, which
+        // costs a window of unprotected traffic, so one dropped datagram must not trigger one.
+        private const val T0_PROBE_ATTEMPTS = 2
+        private const val T0_PROBE_RETRY_DELAY_MS = 700L
+
+        // The tun's own address. Shared with the Builder so the probe's "am I actually on the tunnel?"
+        // assertion can never drift from what we configured.
+        private const val TUN_ADDRESS = "10.77.0.2"
+
+        // Health probe (DNS round-trip through the tunnel). A healthy upstream answers well inside this;
+        // 600ms rather than 1500ms because a needless redial now costs ~250ms, whereas 1.5s of dead
+        // traffic at unlock is user-visible.
+        private const val PROBE_TIMEOUT_MS = 600
         private const val PROBE_DNS_TXID = 0x0C0D
+        private const val PROBE_DNS_SERVER = "1.1.1.1"
+        private const val PROBE_DNS_NAME = "cloudflare.com"
+        private const val DNS_HEADER_SIZE = 12
+
+        // A probe fired within this long of establish() races netd's per-UID rule installation and would
+        // egress on the physical network, so it is delayed rather than answered. Measured false-positive
+        // probes were 71-135ms after establish; honest ones >=250ms.
+        private const val PROBE_ESTABLISH_GRACE_MS = 500L
 
         // Steady-state keepalive while the screen is on: probe this often; this many consecutive failures
-        // (one blip tolerated) re-enters recovery. The probe doubles as a real upstream keepalive. Tunable.
+        // (one blip tolerated) trigger recovery. The probe doubles as a real upstream keepalive. Tunable.
         private const val KEEPALIVE_INTERVAL_MS = 8_000L
+
+        // Screen off: keep watching, just cheaply. This does not run during CPU suspend at all, so it
+        // costs nothing in deep Doze — it only bounds the dead window across awake moments.
+        private const val KEEPALIVE_INTERVAL_SCREEN_OFF_MS = 60_000L
         private const val KEEPALIVE_FAILS_BEFORE_RECOVER = 2
     }
 }

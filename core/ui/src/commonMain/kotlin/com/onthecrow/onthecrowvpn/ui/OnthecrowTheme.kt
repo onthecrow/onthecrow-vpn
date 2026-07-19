@@ -7,9 +7,17 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
+/**
+ * The single accent colour of the app — also the cyan Nimbus layer glowing around the connect button
+ * while the tunnel is up. Declared BEFORE the schemes below: top-level vals initialise in file order,
+ * so referencing it from them requires it to come first.
+ */
+val Accent = Color(0xFF4DD0E1)
+
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF1F6C7A),
-    onPrimary = Color.White,
+    primary = Accent,
+    // Dark ink on the bright accent — white would be unreadable on it.
+    onPrimary = Color(0xFF00363F),
     primaryContainer = Color(0xFFBEEAF2),
     onPrimaryContainer = Color(0xFF002026),
     secondary = Color(0xFF5C6258),
@@ -30,7 +38,7 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFA2D0DA),
+    primary = Accent,
     onPrimary = Color(0xFF00363F),
     primaryContainer = Color(0xFF004E5B),
     onPrimaryContainer = Color(0xFFBEEAF2),
@@ -58,9 +66,6 @@ private val DarkColors = darkColorScheme(
     surfaceContainerHighest = Color(0xFF313C40),
     outlineVariant = Color(0xFF3B4448),
 )
-
-val ConnectedGreen = Color(0xFF2E7D57)
-val DisconnectedGray = Color(0xFF697174)
 
 @Composable
 fun OnthecrowTheme(
