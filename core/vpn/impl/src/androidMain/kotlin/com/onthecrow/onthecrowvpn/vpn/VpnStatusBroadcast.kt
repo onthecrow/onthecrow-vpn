@@ -19,6 +19,7 @@ import com.onthecrow.onthecrowvpn.xray.OtcLog
  */
 internal object VpnStatusBroadcast {
     private const val ACTION = "com.onthecrow.onthecrowvpn.vpn.STATUS"
+    private const val ACTION_QUERY = "com.onthecrow.onthecrowvpn.vpn.QUERY_STATUS"
     private const val EXTRA_CODE = "code"
     private const val EXTRA_MESSAGE = "message"
 
@@ -38,6 +39,31 @@ internal object VpnStatusBroadcast {
             .putExtra(EXTRA_CODE, code)
             .putExtra(EXTRA_MESSAGE, message)
         context.sendBroadcast(intent)
+    }
+
+    /**
+     * Ask the service to re-publish its current status.
+     *
+     * The main process holds the status in memory and starts out believing the tunnel is down. It is
+     * routinely killed while the tunnel runs, so on the next launch that belief is simply wrong — and
+     * everything keyed on it (the connect button, the sync worker deciding whether a settings change
+     * needs a restart) is wrong with it. Harmless when no service is running: nothing answers, and
+     * "disconnected" was the right answer anyway.
+     */
+    fun requestStatus(context: Context) {
+        OtcLog.log("BCAST", "requesting current status from :vpn")
+        context.sendBroadcast(Intent(ACTION_QUERY).setPackage(context.packageName))
+    }
+
+    /** Register the SERVICE-side listener that answers [requestStatus]. */
+    fun registerStatusRequests(context: Context, onQuery: () -> Unit): BroadcastReceiver {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == ACTION_QUERY) onQuery()
+            }
+        }
+        registerNotExported(context, receiver, IntentFilter(ACTION_QUERY))
+        return receiver
     }
 
     /** Register a main-process listener; returns the receiver (kept for the app's lifetime). */

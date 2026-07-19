@@ -24,6 +24,10 @@ actual class PlatformVpnController : VpnController {
             OtcLog.log(LOG_TAG, "status broadcast received: $status")
             AndroidVpnRuntime.status.value = status
         }
+        // This process starts out believing the tunnel is down, and it is routinely killed while the
+        // tunnel is up — so ask rather than assume. Without this, a relaunch under a live tunnel shows
+        // the wrong state and VpnSyncWorker ignores settings changes it should be acting on.
+        VpnStatusBroadcast.requestStatus(AndroidVpnEnvironment.applicationContext)
     }
 
     override suspend fun connect(xrayJson: String): ConnectResult {

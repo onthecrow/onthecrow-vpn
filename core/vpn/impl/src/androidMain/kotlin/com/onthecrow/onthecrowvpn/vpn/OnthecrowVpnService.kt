@@ -130,6 +130,14 @@ class OnthecrowVpnService : VpnService() {
     // Persisted connect params so this :vpn process can self-reconnect after a crash / system kill.
     private val paramsStore by lazy { ConnectionParamsStore(this) }
 
+    /** Authoritative per-app routing, written by the main process. See [SplitTunnelRoutingStore]. */
+    private val routingStore by lazy { SplitTunnelRoutingStore(this) }
+
+    /** Answers a status re-query from a main process that restarted while the tunnel was up. */
+    @Volatile
+    private var lastPublishedStatus: ConnectionStatus = ConnectionStatus.Disconnected
+    private var statusRequestReceiver: BroadcastReceiver? = null
+
     override fun onCreate() {
         super.onCreate()
         // We run in the ":vpn" process, where the Application does NOT bring up the app graph — set up
@@ -138,6 +146,10 @@ class OnthecrowVpnService : VpnService() {
         AndroidVpnEnvironment.initialize(this)
         // TEMP (diagnosis): route any common-code logs running in this process into the same file.
         DebugLog.setSink { tag, message -> OtcLog.log(tag, message) }
+        statusRequestReceiver = VpnStatusBroadcast.registerStatusRequests(this) {
+            logd("status re-query from main process — replying $lastPublishedStatus")
+            VpnStatusBroadcast.send(this, lastPublishedStatus)
+        }
         logd("onCreate (:vpn process) sdk=${Build.VERSION.SDK_INT}")
         logPreviousExitReasons()
     }
@@ -202,6 +214,8 @@ class OnthecrowVpnService : VpnService() {
         logd("onDestroy")
         runBlocking { operationMutex.withLock { stopMonitoring(); stopTunnel() } }
         unregisterMonitoring()
+        statusRequestReceiver?.let { runCatching { unregisterReceiver(it) } }
+        statusRequestReceiver = null
         scope.cancel()
         super.onDestroy()
     }
@@ -223,6 +237,17 @@ class OnthecrowVpnService : VpnService() {
             // (callbacks are dropped across Doze), then advertise it.
             refreshUnderlyingFromSystem()
             applyUnderlyingNetworks(lastUnderlying)
+            // Re-read the routing at the last possible moment. The lists carried in the CONNECT intent
+            // (or restored from persisted params) are a snapshot from whenever that path last ran,
+            // and this service re-establishes on paths the main process never sees. The store is
+            // authoritative; the snapshot is only a fallback for a first run that predates it.
+            routingStore.load()?.let { routing ->
+                if (routing.disallow.toList() != activeDisallow || routing.allow.toList() != activeAllow) {
+                    logd("split-tunnel: refreshed from store (was disallow=$activeDisallow allow=$activeAllow)")
+                }
+                activeDisallow = routing.disallow.toList()
+                activeAllow = routing.allow.toList()
+            }
             logd("connect: establishing tunnel")
             runCatching {
                 stopTunnel()
@@ -232,6 +257,19 @@ class OnthecrowVpnService : VpnService() {
                     .setMtu(mtu)
                     .addAddress(TUN_ADDRESS, 32)
                     .addRoute("0.0.0.0", 0)
+                    // Claim IPv6 WITHOUT giving the interface a v6 address. Android only routes the
+                    // address families a VPN declares, so without this every v6-capable app talks
+                    // straight past the tunnel — and on a dual-stack network Happy Eyeballs actively
+                    // prefers v6, so that is most of them.
+                    //
+                    // No address is deliberate. With the route but no source address the kernel has
+                    // nothing to bind, so a v6 connect() fails instantly with ENETUNREACH and Happy
+                    // Eyeballs falls straight through to IPv4 — which the tunnel does carry. Giving
+                    // the tun a v6 address instead would make apps PREFER a path we cannot actually
+                    // forward, and they would wait out a timeout on every connection before falling
+                    // back. Carrying v6 properly needs the outbound and the server to support it,
+                    // which is a separate change.
+                    .addRoute("::", 0)
                     .addDnsServer("1.1.1.1")
                     // NB: we deliberately do NOT exclude ourselves from the tunnel — our own traffic
                     // routes through it so the health probe ([probeTunnel]) actually tests the tunnel.
@@ -245,7 +283,7 @@ class OnthecrowVpnService : VpnService() {
                 logd("tun established: fd=${tunInterface?.fd}")
                 when (val result = startXrayOnTun(configJson)) {
                     XrayRunResult.Success -> {
-                        VpnStatusBroadcast.send(this, ConnectionStatus.Connected)
+                        publishStatus(ConnectionStatus.Connected)
                         logd("connect: connected")
                         startMonitoring()
                     }
@@ -347,9 +385,20 @@ class OnthecrowVpnService : VpnService() {
                 runCatching { builder.addDisallowedApplication(pkg) }
                     .onFailure { logd("split-tunnel: cannot disallow $pkg: ${it.message}") }
             }
-            activeAllow.isNotEmpty() -> (activeAllow + packageName).distinct().forEach { pkg ->
-                runCatching { builder.addAllowedApplication(pkg) }
-                    .onFailure { logd("split-tunnel: cannot allow $pkg: ${it.message}") }
+            activeAllow.isNotEmpty() -> {
+                var applied = 0
+                (activeAllow + packageName).distinct().forEach { pkg ->
+                    runCatching { builder.addAllowedApplication(pkg); applied++ }
+                        .onFailure { logd("split-tunnel: cannot allow $pkg: ${it.message}") }
+                }
+                // The two branches fail in OPPOSITE directions, which is why only this one is checked.
+                // A package we cannot DISALLOW merely stays in the tunnel — harmless. A package we
+                // cannot ALLOW leaves the tunnel. If every selected app is gone (uninstalled since it
+                // was picked) only our own package survives, and the result is a tunnel that carries
+                // nothing but us while reporting Connected. Refuse to establish instead.
+                if (applied <= 1) {
+                    error("None of the apps selected for the VPN are installed any more")
+                }
             }
         }
         if (activeDisallow.isNotEmpty() || activeAllow.isNotEmpty()) {
@@ -389,10 +438,10 @@ class OnthecrowVpnService : VpnService() {
         operationMutex.withLock {
             logd("runUserDisconnect")
             paramsStore.clear()
-            VpnStatusBroadcast.send(this, ConnectionStatus.Disconnecting)
+            publishStatus(ConnectionStatus.Disconnecting)
             stopMonitoring()
             stopTunnel()
-            VpnStatusBroadcast.send(this, ConnectionStatus.Disconnected)
+            publishStatus(ConnectionStatus.Disconnected)
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
             // Kill this ":vpn" process so xray-core's process-global connection state is gone: with
@@ -547,7 +596,7 @@ class OnthecrowVpnService : VpnService() {
                 .putLong(KEY_LAST_RECOVERY_OK_AT, SystemClock.elapsedRealtime())
                 .commit()
         }
-        VpnStatusBroadcast.send(this, ConnectionStatus.Connected)
+        publishStatus(ConnectionStatus.Connected)
     }
 
     /**
@@ -679,6 +728,15 @@ class OnthecrowVpnService : VpnService() {
         ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
         ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
         else -> "UNKNOWN($reason)"
+    }
+
+    /**
+     * Publish a status to the main process AND remember it, so a main process that starts later can
+     * ask what the truth is instead of assuming the tunnel is down.
+     */
+    private fun publishStatus(status: ConnectionStatus) {
+        lastPublishedStatus = status
+        VpnStatusBroadcast.send(this, status)
     }
 
     private fun recoveryPrefs() = getSharedPreferences(RECOVERY_PREFS, Context.MODE_PRIVATE)
@@ -1025,7 +1083,7 @@ class OnthecrowVpnService : VpnService() {
                 paramsStore.clear()
                 stopMonitoring()
                 stopTunnel()
-                VpnStatusBroadcast.send(this@OnthecrowVpnService, ConnectionStatus.Error(message))
+                publishStatus(ConnectionStatus.Error(message))
                 ServiceCompat.stopForeground(this@OnthecrowVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 scheduleProcessDeath()

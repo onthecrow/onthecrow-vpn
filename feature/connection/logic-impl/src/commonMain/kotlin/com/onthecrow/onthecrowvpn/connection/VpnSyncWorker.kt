@@ -9,6 +9,7 @@ import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
 import com.onthecrow.onthecrowvpn.vpn.VpnController
 import com.onthecrow.onthecrowvpn.vpn.domain.SplitTunnelRepository
 import com.onthecrow.onthecrowvpn.vpn.log.DebugLog
+import com.onthecrow.onthecrowvpn.vpn.model.SplitTunnelMode
 import com.onthecrow.onthecrowvpn.vpn.model.SplitTunnelSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -85,7 +86,7 @@ internal class VpnSyncWorker(
         // RemoteConfig.id is only unique within a source, so the key carries the full ref + url. The
         // split-tunnel settings are in the key too, so toggling them while connected restarts the tunnel
         // (the new exclusions are applied at the next establish, read from the now-updated holder).
-        val current = ConfigKey(ref, cfg.url, splitTunnel)
+        val current = ConfigKey(ref, cfg.url, splitTunnel.routingRelevant())
         val previous = activeKey.value
         if (previous == null) {
             // VPN was started outside our knowledge (initial connect); record and stop.
@@ -119,6 +120,15 @@ internal class VpnSyncWorker(
             }
         }
     }
+
+    /**
+     * Drop the parts of the settings that don't reach the tunnel, so the key changes only when the
+     * ROUTING would. In [SplitTunnelMode.OFF] the selection is remembered but not applied, and without
+     * this every checkbox ticked in that mode would tear a live tunnel down and rebuild it for a
+     * configuration that resolves identically.
+     */
+    private fun SplitTunnelSettings.routingRelevant(): SplitTunnelSettings =
+        if (mode == SplitTunnelMode.OFF) copy(selectedPackages = emptySet()) else this
 
     private data class ConfigKey(val ref: ConfigRef, val url: String, val splitTunnel: SplitTunnelSettings)
     private data class ObservedTuple(

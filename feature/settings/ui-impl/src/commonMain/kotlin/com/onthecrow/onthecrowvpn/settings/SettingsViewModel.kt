@@ -20,13 +20,22 @@ internal class SettingsViewModel(
                 is SettingsEvent.OnExcludePushChanged -> viewModelScope.launch {
                     splitTunnelRepository.update { it.copy(excludePushServices = event.enabled) }
                 }
+                SettingsEvent.OnSplitTunnelClick -> navigator.navigate(SplitTunnelDestination)
                 SettingsEvent.OnBackClick -> navigator.back()
                 else -> Unit
             }
         }.launchIn(viewModelScope)
 
         splitTunnelRepository.observe()
-            .onEach { onEvent(SettingsEvent.OnSettingsLoaded(it.excludePushServices)) }
+            .onEach {
+                onEvent(
+                    SettingsEvent.OnSettingsLoaded(
+                        excludePushServices = it.excludePushServices,
+                        splitTunnelMode = it.mode,
+                        splitTunnelCount = it.selectedPackages.size,
+                    ),
+                )
+            }
             .launchIn(viewModelScope)
     }
 

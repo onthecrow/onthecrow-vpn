@@ -64,4 +64,39 @@ internal class SplitTunnelResolverTest {
         // (resolver doesn't strip self from disallow, but the applier does; document the contract here)
         assertTrue(self in r.disallow)
     }
+
+    @Test
+    fun onlySelectedWithNothingChosenTunnelsEverythingInsteadOfNothing() {
+        // A self-only allowlist establishes fine and passes the health probe (our own traffic IS
+        // tunnelled) while every user app leaves the VPN — Connected, protecting nothing. Fail closed.
+        val resolved = SplitTunnelResolver.resolve(
+            SplitTunnelSettings(mode = SplitTunnelMode.ONLY_SELECTED, selectedPackages = emptySet()),
+            selfPackage = self,
+        )
+        assertTrue(resolved.allow.isEmpty(), "an empty selection must not become a self-only allowlist")
+        assertEquals(SplitTunnelResolver.PUSH_PACKAGES, resolved.disallow)
+    }
+
+    @Test
+    fun onlySelectedWithNothingButPushChosenAlsoTunnelsEverything() {
+        // Push is stripped from the allow set, so picking only push packages leaves it empty too.
+        val resolved = SplitTunnelResolver.resolve(
+            SplitTunnelSettings(
+                mode = SplitTunnelMode.ONLY_SELECTED,
+                selectedPackages = SplitTunnelResolver.PUSH_PACKAGES,
+            ),
+            selfPackage = self,
+        )
+        assertTrue(resolved.allow.isEmpty())
+    }
+
+    @Test
+    fun onlySelectedWithARealChoiceStillCarriesOurOwnPackage() {
+        val resolved = SplitTunnelResolver.resolve(
+            SplitTunnelSettings(mode = SplitTunnelMode.ONLY_SELECTED, selectedPackages = setOf("com.bank.app")),
+            selfPackage = self,
+        )
+        assertEquals(setOf("com.bank.app", self), resolved.allow)
+        assertTrue(resolved.disallow.isEmpty(), "allow and disallow must never both be populated")
+    }
 }

@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Package visibility for the per-app split-tunnel picker. Since Android 11 an app only sees
+         packages it declares an interest in; querying for a LAUNCHER activity reveals every app the
+         user can actually start, which is exactly the set worth routing by hand. Deliberately NOT
+         QUERY_ALL_PACKAGES — that is a Play-restricted permission needing its own justification, and
+         it would only add packages nobody picks from a list. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

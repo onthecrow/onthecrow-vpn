@@ -23,8 +23,19 @@ object SplitTunnelResolver {
 
             // Allowlist: only listed apps tunnel. Our own package MUST tunnel (the health probe runs in
             // our :vpn process); push must bypass, so it's removed from the allow set even if listed.
-            SplitTunnelMode.ONLY_SELECTED ->
-                ResolvedRouting(allow = (settings.selectedPackages + selfPackage) - push)
+            SplitTunnelMode.ONLY_SELECTED -> {
+                val chosen = settings.selectedPackages - push
+                if (chosen.isEmpty()) {
+                    // An allowlist of just ourselves is the worst possible outcome: every user app
+                    // would leave the VPN while the tunnel still establishes and the health probe
+                    // still passes (our own traffic IS tunnelled), so the app would report Connected
+                    // while protecting nothing. With nothing chosen there is no allowlist to honour,
+                    // so fail closed and tunnel everything, exactly as OFF does.
+                    ResolvedRouting(disallow = push)
+                } else {
+                    ResolvedRouting(allow = chosen + selfPackage)
+                }
+            }
         }
     }
 }

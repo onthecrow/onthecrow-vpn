@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -66,25 +67,74 @@ internal fun SettingsScreen(
             onCheckedChange = { onEvent(SettingsEvent.OnExcludePushChanged(it)) },
         )
 
-        Spacer(Modifier.size(20.dp))
-        SectionLabel("Split tunneling")
-        Text(
-            text = "Per-app routing (choose which apps bypass or use the VPN) — coming soon.",
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-        )
+        // Hidden rather than disabled where per-app routing doesn't exist: an entry that opens an
+        // empty list with a working mode selector would let the user "configure" something inert.
+        if (splitTunnelSupported) {
+            Spacer(Modifier.size(20.dp))
+            SectionLabel("Split tunneling")
+            NavigationRow(
+                title = "Per-app routing",
+                subtitle = state.splitTunnelSummary,
+                onClick = { onEvent(SettingsEvent.OnSplitTunnelClick) },
+            )
+        }
     }
 }
 
 @Composable
+private fun NavigationRow(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            imageVector = SettingsSymbols.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * A Material 3 list subheader.
+ *
+ * `titleSmall` is the role M3 gives section headers in a list: 14sp at Medium weight, so it reads as
+ * a heading against 14sp Normal body copy without competing with the 16sp row titles. Sentence case,
+ * not caps — small all-caps is a Material 2 habit and hurts legibility at this size.
+ *
+ * Coloured `onBackground` because that is the surface it sits on (the rows have their own container
+ * colour). M3's own subheader spec reaches for `onSurfaceVariant`, but that is the muted role used
+ * for supporting text, and it made these read as dimmer than the content they introduce.
+ */
+@Composable
 private fun SectionLabel(text: String) {
     Text(
-        text = text.uppercase(),
-        modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 4.dp),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
-        fontWeight = FontWeight.SemiBold,
+        text = text,
+        modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 8.dp),
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.onBackground,
     )
 }
 

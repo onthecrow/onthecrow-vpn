@@ -16,12 +16,17 @@ internal class SplitTunnelAndroidSync(
     scopeProvider: ApplicationScopeProvider,
 ) {
     init {
-        val selfPackage = AndroidVpnEnvironment.applicationContext.packageName
+        val context = AndroidVpnEnvironment.applicationContext
+        val routingStore = SplitTunnelRoutingStore(context)
         repository.observe()
             .onEach { settings ->
-                val routing = SplitTunnelResolver.resolve(settings, selfPackage)
+                val routing = SplitTunnelResolver.resolve(settings, context.packageName)
                 AndroidSplitTunnelState.disallow = routing.disallow.toList()
                 AndroidSplitTunnelState.allow = routing.allow.toList()
+                // Persist for the `:vpn` process, which re-establishes the tunnel on paths this
+                // process is not part of (recovery restart, crash self-heal, boot restore) and would
+                // otherwise be working from whatever routing was captured at the last connect.
+                routingStore.save(routing)
             }
             .launchIn(scopeProvider.scope)
     }

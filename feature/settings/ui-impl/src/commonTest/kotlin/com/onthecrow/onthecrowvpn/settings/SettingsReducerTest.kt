@@ -1,5 +1,6 @@
 package com.onthecrow.onthecrowvpn.settings
 
+import com.onthecrow.onthecrowvpn.vpn.model.SplitTunnelMode
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
@@ -12,7 +13,11 @@ internal class SettingsReducerTest {
     fun loadedReflectsPersistedValue() = runTest {
         val state = reducer.reduce(
             SettingsState(excludePushServices = true),
-            SettingsEvent.OnSettingsLoaded(excludePushServices = false),
+            SettingsEvent.OnSettingsLoaded(
+                excludePushServices = false,
+                splitTunnelMode = SplitTunnelMode.OFF,
+                splitTunnelCount = 0,
+            ),
         )
         assertFalse(state.excludePushServices)
     }
