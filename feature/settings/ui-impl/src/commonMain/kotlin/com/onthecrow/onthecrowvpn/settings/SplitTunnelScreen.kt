@@ -14,9 +14,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -32,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -51,12 +55,20 @@ internal fun SplitTunnelScreen(
     modifier: Modifier = Modifier,
     onEvent: (SplitTunnelEvent) -> Unit,
 ) {
-    Box(
+    // Surface, not Modifier.background: it is what publishes LocalContentColor (here onBackground),
+    // without which every Text lacking an explicit colour falls back to black.
+    Surface(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .windowInsetsPadding(WindowInsets.safeDrawing),
+            // Top and sides only. The list has to scroll UNDER the navigation bar, so its bottom
+            // inset is handled by contentPadding instead — padding it here would leave a band of
+            // background colour below the content, which reads as a filled navigation bar.
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
+            ),
+        color = MaterialTheme.colorScheme.background,
     ) {
+      Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             Header(onBack = { onEvent(SplitTunnelEvent.OnBackClick) })
 
@@ -84,7 +96,7 @@ internal fun SplitTunnelScreen(
                 query = state.query,
                 onQueryChange = { onEvent(SplitTunnelEvent.OnQueryChanged(it)) },
                 onClear = { onEvent(SplitTunnelEvent.OnQueryCleared) },
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 8.dp),
             )
 
             when {
@@ -102,7 +114,16 @@ internal fun SplitTunnelScreen(
                     modifier = Modifier.fillMaxSize(),
                     // Bottom room is reserved permanently rather than only while the Apply button is
                     // up, so the list never reflows underneath the user as it slides in and out.
-                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = ApplyBarHeight),
+                    //
+                    // safeDrawing rather than navigationBars: its bottom is the larger of the gesture
+                    // bar and the keyboard, so searching does not bury the last rows behind the IME,
+                    // and it animates as the keyboard opens.
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        bottom = ApplyBarHeight +
+                            WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding(),
+                    ),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     items(state.visibleApps, key = { it.packageName }) { app ->
@@ -130,11 +151,17 @@ internal fun SplitTunnelScreen(
                 // allowlist. Blocking it here is what makes the red warning above actionable rather
                 // than something the user can simply tap past.
                 enabled = !state.warnEmptyAllowlist,
-                modifier = Modifier.padding(bottom = 20.dp),
+                // The screen deliberately does not consume the bottom inset at its root (the list has
+                // to scroll under the navigation bar), so the button has to claim it itself — and via
+                // safeDrawing, or it would sit behind the keyboard the moment the user searches.
+                modifier = Modifier
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                    .padding(bottom = 20.dp),
             ) {
                 Text("Apply", style = MaterialTheme.typography.labelLarge)
             }
         }
+      }
     }
 }
 
@@ -238,7 +265,6 @@ private fun AppRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .clickable(onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,

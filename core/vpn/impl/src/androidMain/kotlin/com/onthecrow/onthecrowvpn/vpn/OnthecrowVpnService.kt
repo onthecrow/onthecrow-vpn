@@ -133,6 +133,11 @@ class OnthecrowVpnService : VpnService() {
     /** Authoritative per-app routing, written by the main process. See [SplitTunnelRoutingStore]. */
     private val routingStore by lazy { SplitTunnelRoutingStore(this) }
 
+    // A retry is waiting out its backoff. Trigger events consult this to cut the wait short.
+    @Volatile
+    private var retryPending = false
+    private var retryJob: Job? = null
+
     /** Answers a status re-query from a main process that restarted while the tunnel was up. */
     @Volatile
     private var lastPublishedStatus: ConnectionStatus = ConnectionStatus.Disconnected
@@ -287,7 +292,7 @@ class OnthecrowVpnService : VpnService() {
                         logd("connect: connected")
                         startMonitoring()
                     }
-                    is XrayRunResult.Failure -> fail(result.message)
+                    is XrayRunResult.Failure -> scheduleRetry("xray start failed: ${result.message}")
                 }
             }.onFailure { error ->
                 if (error is CancellationException) {
@@ -295,7 +300,7 @@ class OnthecrowVpnService : VpnService() {
                     throw error
                 }
                 logd("runConnect FAILED: ${error.stackTraceToString()}")
-                fail(error.message ?: "Failed to start VPN")
+                scheduleRetry(error.message ?: "Failed to start VPN")
             }
         }
     }
@@ -316,7 +321,10 @@ class OnthecrowVpnService : VpnService() {
         val runtimeJson = sanitizer.withTunInbound(
             configJson,
             mtu = mtu,
-            logLevel = "debug",
+            // The expensive one: at debug xray writes a line per proxied connection — measured at
+            // 110-183 lines/minute in the field, each a synchronous write to FUSE-backed external
+            // storage. Two orders of magnitude more than our own log, and pure overhead in production.
+            logLevel = if (OtcLog.isDebugBuild) "debug" else "warning",
             errorLogPath = xrayLogPath,
         )
         // TEMP (diagnosis): fingerprint of the client credential actually handed to xray — verifies a
@@ -331,7 +339,7 @@ class OnthecrowVpnService : VpnService() {
         // password there in clear would hand over the account. Redaction costs nothing diagnostically:
         // the question this answers is about transport settings, and the fingerprint line above still
         // identifies WHICH config is live.
-        if (!runtimeJsonLogged) {
+        if (OtcLog.isDebugBuild && !runtimeJsonLogged) {
             runtimeJsonLogged = true
             val redacted = runtimeJson.replace(CREDENTIAL_REGEX) { m -> "${m.groupValues[1]}***\"" }
             logd("xray runtimeJson (${runtimeJson.length}B): $redacted")
@@ -350,27 +358,26 @@ class OnthecrowVpnService : VpnService() {
      * vpn-debug.log. [reset] only on a fresh user connect (not on re-dials/recoveries), so one whole
      * session — including every reconnect attempt — accumulates in one pullable file.
      */
+    /**
+     * Point xray's own error log at the SAME file everything else writes to, so a user sharing their
+     * log shares one file with the whole story in it.
+     *
+     * Deliberately does NOT truncate: [OtcLog] owns the size cap and truncates IN PLACE, because
+     * deleting the file out from under xray's open append handle would silently swallow its output
+     * for the life of the process.
+     */
     private fun prepareXrayLogFile(): String? = runCatching {
-        File(getExternalFilesDir(null), "xray.log").apply {
-            // Never reset on connect. The user's reflex after a failure is to reconnect manually, and
-            // that used to wipe the very window that needed explaining — an incident was diagnosable
-            // only from vpn-debug.log because xray's side had already been overwritten. Instead the
-            // file accumulates and is truncated only when it gets genuinely large.
-            if (length() > XRAY_LOG_MAX_BYTES) {
-                logd("xray.log exceeded ${XRAY_LOG_MAX_BYTES}B (${length()}B) — truncating")
-                delete()
-            }
+        OtcLog.logFile(this).apply {
             if (!exists()) {
                 parentFile?.mkdirs()
                 createNewFile()
             }
-            // World-readable so adb shell / file managers can copy it (harmless if FUSE ignores chmod —
-            // app-ownership from createNewFile() is what actually makes it pullable).
+            // World-readable so `adb pull` and file managers still work on a debug build; the release
+            // path for getting this file is the share sheet in settings.
             runCatching { setReadable(true, false) }
-            logd("xray.log prepared: ${length()}B path=$absolutePath readable=${canRead()}")
         }.absolutePath
     }.getOrElse {
-        logd("xray.log prepare FAILED: ${it.message}")
+        logd("log file prepare FAILED: ${it.message}")
         null
     }
 
@@ -437,6 +444,11 @@ class OnthecrowVpnService : VpnService() {
     private suspend fun runUserDisconnect() {
         operationMutex.withLock {
             logd("runUserDisconnect")
+            // Cancel any pending retry FIRST: the whole point of an uncapped retry policy is that only
+            // the user stops it, so this is the one place that must actually stop it.
+            retryPending = false
+            retryJob?.cancel()
+            retryJob = null
             paramsStore.clear()
             publishStatus(ConnectionStatus.Disconnecting)
             stopMonitoring()
@@ -492,6 +504,12 @@ class OnthecrowVpnService : VpnService() {
     }
 
     private fun startTunnelJob(reason: String, start: TunnelStart) {
+        // A retry is sitting out its backoff and something just changed — that is exactly the moment
+        // worth trying again, rather than waiting for a timer that knows nothing about the network.
+        if (retryPending) {
+            retryNow(reason)
+            return
+        }
         if (activeXrayJson == null) {
             logd("startTunnelJob($reason/$start) ignored — no active config")
             return
@@ -590,9 +608,10 @@ class OnthecrowVpnService : VpnService() {
 
     /** Only a CONFIRMED probe counts as success — that is what resets the cross-process restart budget. */
     private fun onRecoverySucceeded() {
+        retryPending = false
         runCatching {
             recoveryPrefs().edit()
-                .putInt(KEY_RESTART_GEN, 0)
+                .putInt(KEY_RETRY_ATTEMPT, 0)
                 .putLong(KEY_LAST_RECOVERY_OK_AT, SystemClock.elapsedRealtime())
                 .commit()
         }
@@ -614,23 +633,16 @@ class OnthecrowVpnService : VpnService() {
             return
         }
         val prefs = recoveryPrefs()
-        val sinceLast = SystemClock.elapsedRealtime() - prefs.getLong(KEY_LAST_RESTART_AT, 0L)
-        // The generation counter is persisted (and commit()ed) because it must survive the kill —
-        // otherwise every fresh process starts with a clean slate and hot-loops against a server that
-        // is simply down. `in 0L until` also handles elapsedRealtime resetting at reboot.
-        val recent = sinceLast in 0L until RESTART_BACKOFF_RESET_MS
-        val generation = if (recent) prefs.getInt(KEY_RESTART_GEN, 0) + 1 else 1
-        if (generation > MAX_RESTART_GENERATIONS) {
-            logd("T1 restart: budget spent (gen=$generation, ${sinceLast}ms since last) — surfacing error")
-            fail("Could not restore the VPN connection")
-            return
-        }
+        // Counted, never capped. A network outage is not a reason to give up on the user's VPN — only
+        // an explicit disconnect is. The count drives the backoff in [scheduleRetry] and is reset by
+        // [onRecoverySucceeded] on a confirmed probe.
+        val attempt = prefs.getInt(KEY_RETRY_ATTEMPT, 0) + 1
 
         // 1. Persist FIRST: this process is about to be SIGKILLed. commit(), never apply().
         paramsStore.save(ConnectionParams(configJson, activeDisallow, activeAllow))
         runCatching {
             prefs.edit()
-                .putInt(KEY_RESTART_GEN, generation)
+                .putInt(KEY_RETRY_ATTEMPT, attempt)
                 .putLong(KEY_LAST_RESTART_AT, SystemClock.elapsedRealtime())
                 .commit()
         }
@@ -655,7 +667,7 @@ class OnthecrowVpnService : VpnService() {
             false
         }
         logd(
-            "T1 restart: reason=$reason gen=$generation exactAlarm=$exact in ${RESTART_DELAY_MS}ms " +
+            "T1 restart: reason=$reason attempt=$attempt exactAlarm=$exact in ${RESTART_DELAY_MS}ms " +
                 "batteryOptIgnored=${isIgnoringBatteryOptimizations()}",
         )
 
@@ -847,6 +859,8 @@ class OnthecrowVpnService : VpnService() {
     private fun stopMonitoring() {
         tunnelJob?.cancel()
         tunnelJob = null
+        retryJob?.cancel()
+        retryJob = null
         activeXrayJson = null
     }
 
@@ -1075,10 +1089,61 @@ class OnthecrowVpnService : VpnService() {
         }
     }
 
+    /**
+     * A recoverable failure: keep everything, wait, try again. Never gives up.
+     *
+     * In-process on purpose. If xray never started there are no tun readers to strand, so there is
+     * nothing a fresh process would buy — and staying alive is what lets a network callback or a
+     * screen-on cut the wait short via [retryNow]. The service also stays foreground, so the tunnel
+     * comes back without the user touching anything.
+     */
+    private fun scheduleRetry(reason: String) {
+        val prefs = recoveryPrefs()
+        val attempt = (prefs.getInt(KEY_RETRY_ATTEMPT, 0) + 1).also {
+            runCatching { prefs.edit().putInt(KEY_RETRY_ATTEMPT, it).commit() }
+        }
+        val wait = RETRY_BACKOFF_MS[(attempt - 1).coerceAtMost(RETRY_BACKOFF_MS.lastIndex)]
+        logd("retry: attempt=$attempt in ${wait}ms — $reason")
+        retryPending = true
+        // Report as still working on it, NOT as an error: the user asked for a VPN and we have not
+        // stopped trying, so an error would be a lie and would also clear the UI's connect intent.
+        publishStatus(ConnectionStatus.Connecting)
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            runCatching { stopTunnel() }
+            delay(wait)
+            attemptRetry("backoff elapsed")
+        }
+    }
+
+    /** Cut a pending backoff short — something changed that might make this attempt succeed. */
+    private fun retryNow(reason: String) {
+        if (!retryPending) return
+        logd("retry: $reason — attempting now instead of waiting")
+        retryJob?.cancel()
+        retryJob = scope.launch { attemptRetry(reason) }
+    }
+
+    private suspend fun attemptRetry(reason: String) {
+        val config = activeXrayJson ?: paramsStore.load()?.xrayJson
+        if (config == null) {
+            logd("retry ($reason): nothing to reconnect to — standing down")
+            retryPending = false
+            return
+        }
+        logd("retry ($reason): reconnecting")
+        runConnect(config)
+    }
+
+    /**
+     * TERMINAL. Only for failures retrying cannot fix — no configuration at all, an allowlist whose
+     * apps are gone, permission revoked. Everything network-shaped goes through [scheduleRetry].
+     */
     private fun fail(message: String) {
         scope.launch {
             operationMutex.withLock {
                 logd("fail (tearing down): $message")
+                retryPending = false
                 // Clear persisted config: a fatal failure must NOT crash-restore-crash in a loop.
                 paramsStore.clear()
                 stopMonitoring()
@@ -1157,20 +1222,22 @@ class OnthecrowVpnService : VpnService() {
 
         // Restart backoff has to survive the kill, or each fresh process starts clean and hot-loops against a
         // server that is simply down. Reset once a restart is this old, or on any confirmed recovery.
-        private const val KEY_RESTART_GEN = "restart_generation"
+        private const val KEY_RETRY_ATTEMPT = "retry_attempt"
         private const val KEY_LAST_RESTART_AT = "last_restart_at"
-        private const val MAX_RESTART_GENERATIONS = 3
-        private const val RESTART_BACKOFF_RESET_MS = 60_000L
+        /**
+         * Wait before the Nth retry. Uncapped in COUNT — we never stop trying while the user wants the
+         * VPN on — but capped in RATE, so a phone in a tunnel or on a plane settles at one attempt per
+         * five minutes instead of spinning. Deliberately plain `delay()`, not an alarm: it must not
+         * wake a sleeping device. The events that matter (a validated network appearing, idle exit,
+         * screen on) short-circuit the wait anyway, so the timer is only the fallback.
+         */
+        private val RETRY_BACKOFF_MS = longArrayOf(1_000, 2_000, 5_000, 15_000, 60_000, 300_000)
         private const val REQ_RESTART = 1
 
         // Non-zero so the process actually dies before the alarm fires: an alarm delivered into a
         // still-terminating process can be dropped, and a LOST restart is an unbounded leak, whereas
         // this delay is a bounded one. Err long, not short.
         private const val RESTART_DELAY_MS = 500L
-
-        // Big enough to hold several sessions plus the incident that follows them, small enough to
-        // send in a message.
-        private const val XRAY_LOG_MAX_BYTES = 8L * 1024 * 1024
 
         private const val VPN_PROCESS_SUFFIX = ":vpn"
         private const val EXIT_REASONS_TO_LOG = 5

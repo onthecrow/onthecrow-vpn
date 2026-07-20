@@ -17,6 +17,12 @@ kotlin {
     jvm()
 
     sourceSets {
+        androidMain.dependencies {
+            // FileProvider, for handing the log file to the share sheet.
+            implementation(libs.androidx.core.ktx)
+            // OtcLog owns the shared log file: its path, and the flush that must happen before sharing.
+            implementation(projects.core.xray)
+        }
         commonMain.dependencies {
             implementation(projects.core.ui)
             implementation(projects.core.uiCore)

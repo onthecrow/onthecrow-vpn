@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Only the diagnostic log is ever shared, and only when the user long-presses the version row.
+         Scoped to that one directory so a bug here can never expose anything else. -->
+    <external-files-path
+        name="logs"
+        path="." />
+</paths>

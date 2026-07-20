@@ -53,6 +53,18 @@
             </intent-filter>
         </activity>
 
+        <!-- Hands the diagnostic log to the share sheet. Not exported: access is granted per-URI, per
+             share, and revoked when the receiving app is done. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- Quick Settings tile: tap toggles the tunnel with the selected config. Uses a dedicated
              full-bleed vector rather than the adaptive launcher foreground, whose safe-zone margin made
              the tile render smaller than every other app's. -->
