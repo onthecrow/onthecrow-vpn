@@ -25,11 +25,6 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Restore the tunnel after a reboot / app update if it was up when we lost it. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Fallback only. The battery-optimization allowlist already grants exact alarms
-         (AlarmManagerService#isExemptFromExactAlarmPermissionNoLock); this covers the user later
-         revoking that exemption. Deliberately NOT USE_EXACT_ALARM, which Play restricts to
-         alarm-clock/calendar/timer apps. -->
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <application
         android:name=".OnthecrowVpnApplication"
@@ -79,26 +74,25 @@
             </intent-filter>
         </service>
 
-        <!-- android:process=":vpn" is load-bearing: the tunnel is restored without ever cold-starting
-             the main process. The recovery restart itself uses no receiver at all — its PendingIntent
-             targets the service directly. -->
         <receiver
             android:name=".vpn.BootRestoreReceiver"
             android:directBootAware="false"
-            android:exported="false"
-            android:process=":vpn">
+            android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
+        <!-- Runs in the app process, deliberately. It owns the tun for the whole session, and the tun
+             dies with its process — so the process that holds it must be the one thing that never
+             needs restarting. Everything that DOES need restarting (libXray and its Go globals) lives
+             in `:xray` below, where killing it costs nothing visible. -->
         <service
             android:name=".vpn.OnthecrowVpnService"
             android:exported="false"
             android:foregroundServiceType="specialUse"
-            android:permission="android.permission.BIND_VPN_SERVICE"
-            android:process=":vpn">
+            android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
@@ -107,6 +101,21 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="vpn" />
         </service>
+
+        <!-- libXray, and nothing else, in its own process so it can be killed and replaced without
+             touching the tun. xray-core keeps package-level globals that stopping it does not clear
+             (hysteria2's client-manager pool behind a sync.Once), so a genuinely fresh engine needs a
+             genuinely fresh process — which used to mean killing the process that also held the tun,
+             tearing the VPN down and blinking the system's VPN icon.
+
+             Not exported and no android:permission: the only caller is our own app, and same-UID
+             binds bypass permission checks anyway. Deliberately NOT a foreground service — it stays
+             alive on the app process's BIND_IMPORTANT binding, and a second specialUse subtype would
+             be a second hand-reviewed justification on Play for no capability we lack. -->
+        <service
+            android:name="com.onthecrow.onthecrowvpn.xray.ipc.XrayEngineService"
+            android:exported="false"
+            android:process=":xray" />
     </application>
 
 </manifest>

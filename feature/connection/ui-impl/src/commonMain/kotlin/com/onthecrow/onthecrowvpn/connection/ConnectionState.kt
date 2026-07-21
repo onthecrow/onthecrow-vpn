@@ -30,8 +30,16 @@ internal data class ConnectionState(
 ) : State {
     val hasAnySource: Boolean get() = groups.isNotEmpty()
 
+    /**
+     * The button is live whenever there is something to act on — including mid-transition.
+     *
+     * It used to also require `!isBusy`, which meant any status that lingered took the only control on
+     * the screen away with it. A tunnel that never confirmed left the user unable to cancel, stop, or
+     * do anything at all. A transition is a reason to show progress, never a reason to remove the way
+     * out; the service tolerates a disconnect at any point in a connect and stands down.
+     */
     val canConnect: Boolean
-        get() = selectedConfig != null && !isBusy
+        get() = selectedConfig != null
 
     val isConnected: Boolean
         get() = connectionStatus is ConnectionStatus.Connected

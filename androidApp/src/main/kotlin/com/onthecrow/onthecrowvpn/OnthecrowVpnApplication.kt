@@ -7,14 +7,11 @@ import java.io.File
 class OnthecrowVpnApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        // The VpnService runs in a separate ":vpn" process so it can be killed on disconnect — that
-        // clears xray-core's PROCESS-GLOBAL hysteria connection pool (keyed by server address), which an
-        // in-process stop/start does NOT clear and which otherwise makes a config switch reuse the
-        // previous client's authenticated QUIC session.
-        //
-        // Application.onCreate runs in BOTH processes; only the main UI process brings up the full app
-        // graph (Koin/Firebase). The :vpn process hosts only the service + libXray and self-initializes
-        // the small env it needs in OnthecrowVpnService.onCreate.
+        // Application.onCreate runs in EVERY process of the app, and one of ours — `:xray` — exists
+        // precisely so it can be killed and replaced cheaply. Bringing Koin and Firebase up in it would
+        // pay for the whole app graph on every engine restart, and put objects with process-global
+        // state in the process we throw away. It initialises the little it needs in
+        // XrayEngineService.onCreate instead.
         if (isMainProcess()) {
             AppInitializer.initialize(AndroidPlatform(this))
         }

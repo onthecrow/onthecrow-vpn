@@ -151,7 +151,11 @@ internal class ConnectionViewModel(
     }
 
     private fun handleConnectClick() {
-        if (state.value.isConnected) {
+        // Connected OR mid-transition both mean "stop". Only the second half is new: a tap while
+        // Connecting used to start a SECOND connect, so a tunnel that never finished coming up had no
+        // way out at all — the one control on the screen could only ask again for the thing that was
+        // already stuck. Disconnect is safe from any state; the service stands down wherever it is.
+        if (state.value.isConnected || state.value.isBusy) {
             handleDisconnectClick()
             return
         }

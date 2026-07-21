@@ -9,9 +9,10 @@ import com.onthecrow.onthecrowvpn.xray.OtcLog
 /**
  * Brings the tunnel back after a reboot or an app update, if it was up when we lost it.
  *
- * Declared with `android:process=":vpn"` so it wakes the VPN process directly and never cold-starts the
- * main process — the tunnel does not need the UI, and pulling the whole app graph up would be slower
- * and more fragile.
+ * Runs in the app process, like the service it starts. It used to be pinned to `:vpn` so a reboot
+ * would not cold-start the whole app graph; that stopped being possible when the tunnel's owner moved
+ * here, and the graph now comes up either way. `startForeground` is called first thing in
+ * `onStartCommand` precisely so that cold start cannot run into the FGS start timeout.
  *
  * The persisted [ConnectionParams] are the authority: they exist only while a tunnel is meant to be
  * running, and a user disconnect or a fatal failure clears them. So "params exist" is exactly the

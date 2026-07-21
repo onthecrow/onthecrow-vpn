@@ -6,6 +6,8 @@ import android.content.pm.ApplicationInfo
 import android.os.Build
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
+import android.util.Log
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
@@ -34,6 +36,9 @@ object OtcLog {
     /** How often the size is actually checked, rather than on every single line. */
     private const val SIZE_CHECK_INTERVAL_MS = 60_000L
 
+    /** Between attempts to open the file. Often enough to catch storage settling, rare enough to be free. */
+    private const val OPEN_RETRY_INTERVAL_MS = 2_000L
+
     /** Hard ceiling for the shared file. Truncated in place on the way past it. */
     private const val MAX_BYTES = 100L * 1024 * 1024
 
@@ -45,10 +50,11 @@ object OtcLog {
     // Touched only on the executor thread → no synchronization needed.
     private val timeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
     private var writer: BufferedWriter? = null
-    private var writerResolved = false
     private var procTag: String? = null
     private var logFile: File? = null
     private var lastSizeCheckAt = 0L
+    private var lastOpenAttemptAt = 0L
+    private var openFailures = 0
 
     /**
      * Debug builds only — and this gates VERBOSITY, not whether we log at all.
@@ -148,14 +154,31 @@ object OtcLog {
         if (submitted) runCatching { done.await(timeoutMs, TimeUnit.MILLISECONDS) }
     }
 
-    /** Lazily (and once) open the append writer on the executor thread; retries until a context exists. */
+    /**
+     * Open the append writer, on the executor thread, retrying until it actually succeeds.
+     *
+     * Retrying on FAILURE — not just on "no context yet" — is the whole point. The previous version
+     * latched `writerResolved = true` before attempting the open, so a single transient failure left
+     * that process silent for its entire life with no indication anywhere. That is not hypothetical:
+     * a field log came back containing only the `:xray` process, with nothing at all from the process
+     * that owns the tunnel, for a fifteen-minute session in which the tunnel demonstrably worked. The
+     * app process opens this file at launch, when external storage may still be settling; `:xray`
+     * starts later and succeeded every time.
+     *
+     * The failure is also reported to Logcat now. A logger that cannot log has to say so somewhere.
+     */
     private fun writerOrNull(): BufferedWriter? {
-        if (writerResolved) return writer
+        writer?.let { return it }
         val ctx = appContext() ?: return null // no context yet — try again on the next line
-        writerResolved = true
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastOpenAttemptAt < OPEN_RETRY_INTERVAL_MS) return null
+        lastOpenAttemptAt = now
         procTag = procTag(ctx)
         writer = runCatching {
             val file = logFile(ctx).also { logFile = it }
+            // getExternalFilesDir normally creates this, but not if the volume was unavailable when it
+            // was asked; FileWriter will not create a missing parent and simply throws.
+            file.parentFile?.mkdirs()
             BufferedWriter(FileWriter(file, /* append = */ true)).also { w ->
                 w.write(
                     "${timeFormat.format(Date(System.currentTimeMillis()))} " +
@@ -164,6 +187,15 @@ object OtcLog {
                 w.newLine()
                 w.flush()
             }
+        }.onFailure { error ->
+            openFailures++
+            // Rate-limited so a permanently unwritable file cannot itself become the spam.
+            if (openFailures == 1 || openFailures % 50 == 0) {
+                Log.w(
+                    "OtcLog",
+                    "cannot open the log file (attempt $openFailures): ${error.javaClass.simpleName}: ${error.message}",
+                )
+            }
         }.getOrNull()
         return writer
     }
@@ -171,7 +203,7 @@ object OtcLog {
     private fun appContext(): Context? =
         runCatching { AndroidXrayEnvironment.applicationContext }.getOrNull()
 
-    /** "main" or "vpn" — which process this logger instance lives in. */
+    /** "main", "vpn" or "xray" — which process this logger instance lives in. */
     private fun procTag(ctx: Context): String {
         val name = runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -184,6 +216,7 @@ object OtcLog {
         return when {
             name == null -> "p$pid"
             name.endsWith(":vpn") -> "vpn/$pid"
+            name.endsWith(":xray") -> "xray/$pid"
             name == ctx.packageName -> "main/$pid"
             else -> "$name/$pid"
         }
