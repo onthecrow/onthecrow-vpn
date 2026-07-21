@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LIBXRAY_TAG="${LIBXRAY_TAG:-v26.3.27}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=libxray-version.sh
+source "${ROOT_DIR}/scripts/libxray-version.sh"
 WORK_DIR="${ROOT_DIR}/.libxray-build"
 OUTPUT_DIR="${ROOT_DIR}/local-libs/libxray"
 

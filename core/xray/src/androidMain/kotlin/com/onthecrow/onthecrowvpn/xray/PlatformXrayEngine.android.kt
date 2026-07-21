@@ -1,14 +1,16 @@
 package com.onthecrow.onthecrowvpn.xray
 
-import android.util.Base64
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import java.io.File
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
@@ -40,6 +42,17 @@ actual class PlatformXrayEngine : XrayEngine {
     private val summarizer = XrayConfigSummarizer(json)
     private val sanitizer = XrayConfigSanitizer(json)
 
+    /**
+     * The tun fd xray should adopt on its next start.
+     *
+     * libXray no longer exposes `setTunFd`: the fd travels inside the config's `env` block, read by
+     * xray-core's `proxy/tun` through the `xray.tun.fd` platform flag. Keeping [setTunFd] in the
+     * interface and remembering the value here means callers still say "here is the tun, now start"
+     * and do not have to know that it is really a config detail.
+     */
+    @Volatile
+    private var tunFd: Int? = null
+
     private val libXrayClass: Class<*>? by lazy {
         listOf(
             "libXray.LibXray",
@@ -55,30 +68,26 @@ actual class PlatformXrayEngine : XrayEngine {
         if (trimmed.isBlank()) {
             return XrayValidationResult.Invalid("Configuration is empty")
         }
-        val libClass = libXrayClass ?: return XrayValidationResult.Invalid(
-            "libXray is not installed. Run scripts/build-libxray-android.sh first.",
-        )
+        if (libXrayClass == null) {
+            return XrayValidationResult.Invalid(
+                "libXray is not installed. Run scripts/build-libxray-android.sh first.",
+            )
+        }
         OtcLog.log(LOG_TAG, "validate: rawLen=${trimmed.length}")
         return runCatching {
-            val converted = callResponse(
-                methodName = "convertShareLinksToXrayJson",
-                argument = base64(trimmed),
-                libClass = libClass,
+            val converted = invoke(
+                method = "convertShareLinksToXrayJson",
+                payload = buildJsonObject { put("text", trimmed) },
             )
             val rawXrayJson = converted.data?.let { json.encodeToString(it) }
                 ?: return@runCatching XrayValidationResult.Invalid("Xray returned empty config")
             val xrayJson = sanitizer.sanitize(rawXrayJson)
-            val configPath = writeConfigFile(xrayJson)
-            val testRequest = json.encodeToString(
-                mapOf(
-                    "datDir" to datDir().absolutePath,
-                    "configPath" to configPath.absolutePath,
-                )
-            )
-            val testResult = callResponse(
-                methodName = "testXray",
-                argument = base64(testRequest),
-                libClass = libClass,
+            // testXray only takes a path, so the environment it needs (the geo asset directory) has
+            // to be inside the file we hand it.
+            val configPath = writeConfigFile(withPlatformEnv(xrayJson, includeTunFd = false))
+            val testResult = invoke(
+                method = "testXray",
+                payload = buildJsonObject { put("configPath", configPath.absolutePath) },
             )
             if (!testResult.success) {
                 OtcLog.log(LOG_TAG, "validate: testXray REJECTED — ${testResult.error}")
@@ -98,19 +107,8 @@ actual class PlatformXrayEngine : XrayEngine {
     }
 
     override suspend fun setTunFd(fd: Int) {
-        val libClass = libXrayClass ?: run {
-            OtcLog.log(LOG_TAG, "setTunFd($fd) skipped — libXray not loaded")
-            return
-        }
-        runCatching {
-            val via = when {
-                findMethod(libClass, "setTunFd", Int::class.javaPrimitiveType)?.also { it.invoke(null, fd) } != null -> "int"
-                findMethod(libClass, "setTunFd", Integer.TYPE)?.also { it.invoke(null, fd) } != null -> "Integer"
-                findMethod(libClass, "setTunFd", Long::class.javaPrimitiveType)?.also { it.invoke(null, fd.toLong()) } != null -> "long"
-                else -> "NONE"
-            }
-            OtcLog.log(LOG_TAG, "setTunFd($fd) via=$via")
-        }.onFailure { OtcLog.log(LOG_TAG, "setTunFd($fd) FAILED: ${it.message}") }
+        tunFd = fd
+        OtcLog.log(LOG_TAG, "tun fd for the next start: $fd")
     }
 
     override suspend fun start(xrayJson: String): XrayRunResult {
@@ -119,39 +117,40 @@ actual class PlatformXrayEngine : XrayEngine {
         )
         return runCatching {
             registerProtectControllers(libClass)
-            val request = json.encodeToString(
-                mapOf(
-                    "datDir" to datDir().absolutePath,
-                    "configJSON" to xrayJson,
-                )
-            )
-            OtcLog.log(LOG_TAG, "runXrayFromJSON: configBytes=${xrayJson.length}")
-            val response = callResponse(
-                methodName = "runXrayFromJSON",
-                argument = base64(request),
-                libClass = libClass,
+            val runtimeJson = withPlatformEnv(xrayJson, includeTunFd = true)
+            OtcLog.log(LOG_TAG, "runXrayFromJson: configBytes=${runtimeJson.length} tunFd=$tunFd")
+            val response = invoke(
+                method = "runXrayFromJson",
+                payload = buildJsonObject { put("configJSON", runtimeJson) },
             )
             if (response.success) {
-                OtcLog.log(LOG_TAG, "runXrayFromJSON: success")
+                OtcLog.log(LOG_TAG, "runXrayFromJson: success")
                 XrayRunResult.Success
             } else {
-                OtcLog.log(LOG_TAG, "runXrayFromJSON: FAILED error=${response.error}")
+                OtcLog.log(LOG_TAG, "runXrayFromJson: FAILED error=${response.error}")
                 XrayRunResult.Failure(response.error ?: "Xray failed to start")
             }
         }.getOrElse { error ->
             if (error is CancellationException) throw error
-            OtcLog.log(LOG_TAG, "runXrayFromJSON: THREW ${error.stackTraceToString()}")
+            OtcLog.log(LOG_TAG, "runXrayFromJson: THREW ${error.stackTraceToString()}")
             XrayRunResult.Failure(error.message ?: "Xray failed to start")
         }
     }
 
     override suspend fun stop(): XrayRunResult {
-        val libClass = libXrayClass ?: return XrayRunResult.Success
+        if (libXrayClass == null) return XrayRunResult.Success
         return runCatching {
-            val response = callResponse("stopXray", null, libClass)
-            OtcLog.log(LOG_TAG, "stopXray: success=${response.success} error=${response.error}")
-            if (response.success) XrayRunResult.Success
-            else XrayRunResult.Failure(response.error ?: "Xray failed to stop")
+            val response = invoke(method = "stopXray")
+            // Ask rather than assume. The whole in-process re-dial rests on the engine really being
+            // stopped — xray refuses to start again while an instance is live — so a stop that only
+            // *claims* to have worked would strand the tunnel with no way to tell from the outside.
+            val running = isRunning()
+            OtcLog.log(LOG_TAG, "stopXray: success=${response.success} running=$running error=${response.error}")
+            when {
+                running == true -> XrayRunResult.Failure("Xray is still running after stopXray")
+                response.success -> XrayRunResult.Success
+                else -> XrayRunResult.Failure(response.error ?: "Xray failed to stop")
+            }
         }.getOrElse { error ->
             if (error is CancellationException) throw error
             OtcLog.log(LOG_TAG, "stopXray: THREW ${error.stackTraceToString()}")
@@ -159,28 +158,56 @@ actual class PlatformXrayEngine : XrayEngine {
         }
     }
 
-    private fun callResponse(
-        methodName: String,
-        argument: String?,
-        libClass: Class<*>,
-    ): LibXrayCallResponse {
-        val method = if (argument == null) {
-            findMethod(libClass, methodName)
-        } else {
-            findMethod(libClass, methodName, String::class.java)
-        } ?: error("libXray method $methodName was not found")
-        val result = if (argument == null) method.invoke(null) else method.invoke(null, argument)
-        val encoded = result as? String ?: error("libXray method $methodName returned non-string response")
-        return decodeResponse(encoded)
+    /** null when libXray cannot answer; callers treat that as "cannot verify", not as "stopped". */
+    private fun isRunning(): Boolean? = runCatching {
+        invoke(method = "getXrayState").data?.jsonObject?.get("running")?.jsonPrimitive?.booleanOrNull
+    }.getOrNull()
+
+    /**
+     * Merge the platform environment xray needs into the config's top-level `env` block.
+     *
+     * Both values used to be arguments to libXray calls that no longer exist; xray-core reads them as
+     * platform flags, and its config loader applies `env` with `os.Setenv` while building. Merged
+     * rather than assigned, so a config that already carries an `env` keeps it.
+     */
+    private fun withPlatformEnv(xrayJson: String, includeTunFd: Boolean): String {
+        val root = runCatching { json.parseToJsonElement(xrayJson).jsonObject }.getOrNull()
+            ?: return xrayJson
+        val env = buildJsonObject {
+            (root["env"] as? JsonObject)?.forEach { (key, value) -> put(key, value) }
+            put("xray.location.asset", datDir().absolutePath)
+            if (includeTunFd) tunFd?.let { put("xray.tun.fd", it.toString()) }
+        }
+        val merged = buildJsonObject {
+            root.forEach { (key, value) -> if (key != "env") put(key, value) }
+            put("env", env)
+        }
+        return json.encodeToString(JsonObject.serializer(), merged)
     }
 
-    private fun decodeResponse(encoded: String): LibXrayCallResponse {
-        val decoded = String(Base64.decode(encoded, Base64.DEFAULT))
-        val root = json.parseToJsonElement(decoded).jsonObject
-        return LibXrayCallResponse(
+    /**
+     * The single entry point libXray exposes now: one JSON envelope in, one JSON envelope out.
+     *
+     * Everything used to be a separate exported function taking base64; the whole surface collapsed
+     * into `invoke`, and the encoding is plain JSON in both directions. Still reached by reflection so
+     * a missing or mismatched AAR degrades to a readable error instead of a link failure at startup.
+     */
+    private fun invoke(method: String, payload: JsonObject? = null): InvokeResponse {
+        val libClass = libXrayClass ?: error("libXray is not installed")
+        val request = buildJsonObject {
+            put("apiVersion", 1)
+            put("method", method)
+            if (payload != null) put("payload", payload)
+        }
+        val invokeMethod = findMethod(libClass, "invoke", String::class.java)
+            ?: error("libXray.invoke(String) was not found — the bundled AAR is too old")
+        val raw = invokeMethod.invoke(null, json.encodeToString(JsonObject.serializer(), request))
+            as? String ?: error("libXray.invoke returned a non-string response")
+        val root = json.parseToJsonElement(raw).jsonObject
+        return InvokeResponse(
             success = root["success"]?.jsonPrimitive?.booleanOrNull ?: false,
             data = root["data"],
-            error = root["error"]?.jsonPrimitive?.contentOrNull,
+            error = root["error"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -227,11 +254,7 @@ actual class PlatformXrayEngine : XrayEngine {
         return File(context.filesDir, "xray").also { it.mkdirs() }
     }
 
-    private fun base64(text: String): String {
-        return Base64.encodeToString(text.toByteArray(), Base64.NO_WRAP)
-    }
-
-    private data class LibXrayCallResponse(
+    private data class InvokeResponse(
         val success: Boolean,
         val data: JsonElement?,
         val error: String?,

@@ -9,15 +9,14 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import libxray.LibXrayRunXrayFromJSON
-import libxray.LibXraySetTunFd
-import libxray.LibXrayStopXray
+import libxray.LibXrayInvoke
 import platform.Foundation.NSError
 import platform.Foundation.NSNumber
 import platform.Foundation.NSTemporaryDirectory
@@ -31,9 +30,7 @@ import platform.NetworkExtension.NEPacketTunnelProvider
 import platform.NetworkExtension.NEProviderStopReason
 import platform.NetworkExtension.NETunnelProviderProtocol
 import platform.posix.getsockopt
-import platform.posix.setenv
 import platform.posix.socklen_tVar
-import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
@@ -97,15 +94,11 @@ class OnthecrowTunnelCore(
                 completionHandler(fail(2, "Could not locate the tunnel descriptor (utun)"))
                 return@setTunnelNetworkSettings
             }
-            LibXraySetTunFd(fd)
-            setenv("xray.tun.fd", fd.toString(), 1)
-
-            val request = buildJsonObject {
-                put("datDir", NSTemporaryDirectory())
-                put("configJSON", xrayJson)
-            }.toString()
-            log("startTunnel: calling RunXrayFromJSON")
-            val response = LibXrayRunXrayFromJSON(Base64.Default.encode(request.encodeToByteArray()))
+            log("startTunnel: calling runXrayFromJson")
+            val response = invokeLibXray(
+                method = "runXrayFromJson",
+                payload = buildJsonObject { put("configJSON", withPlatformEnv(xrayJson, fd)) },
+            )
             val error = libXrayError(response)
             if (error != null) {
                 log("startTunnel: xray error: $error")
@@ -122,7 +115,7 @@ class OnthecrowTunnelCore(
         completionHandler: () -> Unit,
     ) {
         log("stopTunnel: reason=$reason")
-        LibXrayStopXray()
+        invokeLibXray(method = "stopXray")
         completionHandler()
     }
 
@@ -176,10 +169,46 @@ class OnthecrowTunnelCore(
     }
 
     /** Returns the error from a libXray base64 CallResponse, or null on success. */
-    private fun libXrayError(base64Response: String): String? {
-        val decoded = runCatching { Base64.Default.decode(base64Response).decodeToString() }.getOrNull()
-            ?: return "Malformed libXray response"
-        val root = runCatching { json.parseToJsonElement(decoded).jsonObject }.getOrNull()
+    /**
+     * Merge the platform environment xray needs into the config's top-level `env` block.
+     *
+     * Both values used to be handed over out-of-band — `SetTunFd` for the descriptor, a `datDir`
+     * request field for the assets — and both are gone. Setting them with the C `setenv` is not a
+     * substitute: Go reads `os.Getenv` from a copy of the environment taken when the process started,
+     * so a later C-side write is invisible to it. The config loader, on the other hand, applies `env`
+     * with `os.Setenv` while building. Merged rather than assigned, so a config that already carries
+     * an `env` keeps it.
+     */
+    private fun withPlatformEnv(xrayJson: String, tunFd: Int): String {
+        val root = runCatching { json.parseToJsonElement(xrayJson).jsonObject }.getOrNull()
+            ?: return xrayJson
+        val env = buildJsonObject {
+            (root["env"] as? JsonObject)?.forEach { (key, value) -> put(key, value) }
+            put("xray.location.asset", NSTemporaryDirectory())
+            put("xray.tun.fd", tunFd.toString())
+        }
+        val merged = buildJsonObject {
+            root.forEach { (key, value) -> if (key != "env") put(key, value) }
+            put("env", env)
+        }
+        return json.encodeToString(JsonObject.serializer(), merged)
+    }
+
+    /**
+     * The single entry point libXray exposes since v26.7.11: one JSON envelope in, one out. Every
+     * former top-level function became a `method` here, and the base64 wrapping is gone.
+     */
+    private fun invokeLibXray(method: String, payload: JsonObject? = null): String {
+        val request = buildJsonObject {
+            put("apiVersion", 1)
+            put("method", method)
+            if (payload != null) put("payload", payload)
+        }
+        return LibXrayInvoke(request.toString())
+    }
+
+    private fun libXrayError(response: String): String? {
+        val root = runCatching { json.parseToJsonElement(response).jsonObject }.getOrNull()
             ?: return "Malformed libXray response"
         val success = root["success"]?.jsonPrimitive?.booleanOrNull ?: false
         return if (success) null else (root["error"]?.jsonPrimitive?.contentOrNull ?: "Xray failed to start")

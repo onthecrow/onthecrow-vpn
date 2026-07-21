@@ -3,13 +3,14 @@ package com.onthecrow.onthecrowvpn.xray
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
-import libxray.LibXrayConvertShareLinksToXrayJson
+import libxray.LibXrayInvoke
 
 @OptIn(ExperimentalEncodingApi::class, ExperimentalForeignApi::class)
 actual class PlatformXrayEngine : XrayEngine {
@@ -24,14 +25,16 @@ actual class PlatformXrayEngine : XrayEngine {
         val rawXrayJson = if (trimmed.startsWith("{")) {
             trimmed
         } else {
-            // Convert the share link via the same libXray entry point used on Android,
-            // so the resulting Xray JSON matches byte-for-byte. Request and response are
-            // both base64-wrapped (libXray's CallResponse envelope).
-            val b64in = Base64.Default.encode(trimmed.encodeToByteArray())
-            val response = LibXrayConvertShareLinksToXrayJson(b64in)
-            val decoded = runCatching { Base64.Default.decode(response).decodeToString() }.getOrNull()
-                ?: return XrayValidationResult.Invalid("Malformed libXray response")
-            val root = runCatching { json.parseToJsonElement(decoded).jsonObject }.getOrNull()
+            // Convert the share link via the same libXray entry point used on Android, so the
+            // resulting Xray JSON matches byte-for-byte. Since v26.7.11 that is the single `invoke`
+            // dispatcher taking a JSON envelope — the base64 wrapping is gone in both directions.
+            val request = buildJsonObject {
+                put("apiVersion", 1)
+                put("method", "convertShareLinksToXrayJson")
+                put("payload", buildJsonObject { put("text", trimmed) })
+            }
+            val response = LibXrayInvoke(request.toString())
+            val root = runCatching { json.parseToJsonElement(response).jsonObject }.getOrNull()
                 ?: return XrayValidationResult.Invalid("Malformed libXray response")
             val success = root["success"]?.jsonPrimitive?.booleanOrNull ?: false
             if (!success) {

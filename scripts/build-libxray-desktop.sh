@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 #
-# Builds the libXray desktop sidecar (`desktop_bin`) — a standalone Xray runner
-# that creates the OS TUN device (utun on macOS, Wintun on Windows) and runs
-# Xray-core. Routing / DNS / privilege handling live in the per-OS wrapper
-# scripts under scripts/desktop/ — this binary is the unmodified upstream one.
+# Builds the desktop sidecar — a standalone Xray runner that creates the OS TUN
+# device (utun on macOS, Wintun on Windows) and runs Xray-core. Privilege
+# handling and system routing/DNS live in the per-OS wrapper scripts under
+# scripts/desktop/.
+#
+# The sidecar was libXray's own `desktop_bin` until upstream deleted it in
+# v26.7.11; we now carry it in scripts/desktop/sidecar/ and graft it back into
+# the module tree here. See that directory's main.go for what differs.
 #
 # Output: local-libs/libxray-desktop/<os-arch>/onthecrow-xray[.exe]
 #
@@ -12,8 +16,9 @@
 #
 set -euo pipefail
 
-LIBXRAY_TAG="${LIBXRAY_TAG:-v26.3.27}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=libxray-version.sh
+source "${ROOT_DIR}/scripts/libxray-version.sh"
 WORK_DIR="${ROOT_DIR}/.libxray-build"
 SRC_DIR="${WORK_DIR}/libXray"
 OUTPUT_BASE="${ROOT_DIR}/local-libs/libxray-desktop"
@@ -44,15 +49,15 @@ if ! git rev-parse -q --verify "refs/tags/${LIBXRAY_TAG}" >/dev/null; then
 fi
 git checkout -q "${LIBXRAY_TAG}"
 
-# Drop our standalone share-link -> Xray JSON converter into the libXray module
-# tree so it can import the internal `share` package, then build it per target.
-CONVERT_SRC="${ROOT_DIR}/scripts/desktop/convert/main.go"
+# Drop our standalone share-link -> Xray JSON converter and the vendored sidecar
+# into the libXray module tree so they can import its internal packages, then
+# build each per target.
 mkdir -p "${SRC_DIR}/onthecrow_convert"
-cp "${CONVERT_SRC}" "${SRC_DIR}/onthecrow_convert/main.go"
+cp "${ROOT_DIR}/scripts/desktop/convert/main.go" "${SRC_DIR}/onthecrow_convert/main.go"
 
-# Overlay a patched desktop_bin main.go that prints the runXray error instead of
-# silently os.Exit(1) — essential for diagnosing desktop failures.
-cp "${ROOT_DIR}/scripts/desktop/sidecar-main.go" "${SRC_DIR}/desktop_bin/main.go"
+rm -rf "${SRC_DIR}/onthecrow_sidecar"
+mkdir -p "${SRC_DIR}/onthecrow_sidecar"
+cp "${ROOT_DIR}"/scripts/desktop/sidecar/*.go "${SRC_DIR}/onthecrow_sidecar/"
 
 build_target() {
   local target="$1"
@@ -72,7 +77,7 @@ build_target() {
   ( cd "${SRC_DIR}"
     GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
       go build -trimpath -ldflags '-s -w' \
-      -o "${out_dir}/${xray_name}" ./desktop_bin )
+      -o "${out_dir}/${xray_name}" ./onthecrow_sidecar )
 
   echo "==> Building converter ${target}"
   ( cd "${SRC_DIR}"
