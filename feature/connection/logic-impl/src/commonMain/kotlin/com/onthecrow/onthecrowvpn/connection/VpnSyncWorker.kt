@@ -99,26 +99,29 @@ internal class VpnSyncWorker(
     }
 
     private suspend fun restartWith(cfg: RemoteConfig, key: ConfigKey) {
-        DebugLog.log("WORKER", "restartWith: ${cfg.name} url=${cfg.url.take(40)} — disconnecting")
+        // Validate BEFORE tearing anything down. Validation runs in the engine process, which is alive
+        // and healthy while the tunnel is up — but the disconnect below KILLS it, and validating after
+        // that raced the just-killed process into a DeadObjectException, so a split-tunnel change that
+        // should have reconnected instead left the tunnel down until the user reconnected by hand.
+        // Doing it first also means a genuinely bad new config never costs the working tunnel.
+        DebugLog.log("WORKER", "restartWith: ${cfg.name} url=${cfg.url.take(40)} — validating")
+        val xrayJson = when (val result = prepareConnectionConfig(cfg.url)) {
+            is ConfigValidationResult.Valid -> result.xrayJson
+            is ConfigValidationResult.Invalid -> {
+                DebugLog.log("WORKER", "restartWith: INVALID config — ${result.message} — keeping current tunnel")
+                return
+            }
+        }
+        DebugLog.log("WORKER", "restartWith: valid — disconnecting to reapply")
         vpnController.disconnect()
         // Wait for the service to fully tear down before reconnecting.
         // Accept Error too — a failed teardown still releases the tunnel.
         vpnController.status
             .filter { it is ConnectionStatus.Disconnected || it is ConnectionStatus.Error }
             .first()
-        DebugLog.log("WORKER", "restartWith: torn down — validating new config")
-        when (val result = prepareConnectionConfig(cfg.url)) {
-            is ConfigValidationResult.Valid -> {
-                DebugLog.log("WORKER", "restartWith: valid — reconnecting")
-                vpnController.connect(result.xrayJson)
-                activeKey.value = key
-            }
-            is ConfigValidationResult.Invalid -> {
-                // Validation failed for the new config: surface is via VpnController error
-                // status / snackbar pathway; nothing else to do here.
-                DebugLog.log("WORKER", "restartWith: INVALID config — ${result.message}")
-            }
-        }
+        DebugLog.log("WORKER", "restartWith: torn down — reconnecting")
+        vpnController.connect(xrayJson)
+        activeKey.value = key
     }
 
     /**

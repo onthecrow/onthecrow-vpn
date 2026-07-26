@@ -18,8 +18,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Keep the VPN tunnel alive through Doze (request exemption at runtime). -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Recovery holds a PARTIAL_WAKE_LOCK across the whole re-dial so the CPU cannot suspend
          half-way through re-establishing the tunnel. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -28,7 +26,7 @@
 
     <application
         android:name=".OnthecrowVpnApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -99,14 +97,15 @@
 
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="vpn" />
+                android:value="Maintains the user-configured VpnService tunnel while the app is backgrounded; Android provides no dedicated VPN foreground-service type." />
         </service>
 
         <!-- libXray, and nothing else, in its own process so it can be killed and replaced without
-             touching the tun. xray-core keeps package-level globals that stopping it does not clear
-             (hysteria2's client-manager pool behind a sync.Once), so a genuinely fresh engine needs a
-             genuinely fresh process — which used to mean killing the process that also held the tun,
-             tearing the VPN down and blinking the system's VPN icon.
+             touching the tun. Nothing is ever deleted from hysteria2's client-pool map, and its
+             janitor only closes clients whose connection has gone Inactive — which one kept alive by
+             our 3s keepalive never does. A stopped engine therefore leaves an immortal session still
+             talking to the server, and only process death reaps it. That used to mean killing the
+             process holding the tun, which tore the VPN down and blinked the system's VPN icon.
 
              Not exported and no android:permission: the only caller is our own app, and same-UID
              binds bypass permission checks anyway. Deliberately NOT a foreground service — it stays

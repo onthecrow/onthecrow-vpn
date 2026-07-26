@@ -125,6 +125,14 @@ internal fun ConnectionScreen(
         onEvent(ConnectionEvent.OnSnackbarShown)
     }
 
+    // Play-mandated VPN disclosure, shown on the first connect before the system prepare() dialog.
+    if (state.showConsent) {
+        VpnConsentDialog(
+            onAccept = { onEvent(ConnectionEvent.OnConsentAccepted) },
+            onDecline = { onEvent(ConnectionEvent.OnConsentDeclined) },
+        )
+    }
+
     Scaffold(
         modifier = modifier,
         snackbarHost = {

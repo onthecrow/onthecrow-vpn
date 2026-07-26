@@ -13,6 +13,7 @@ import com.onthecrow.onthecrowvpn.connection.SelectConfigUseCaseImpl
 import com.onthecrow.onthecrowvpn.connection.VpnSyncWorker
 import com.onthecrow.onthecrowvpn.connection.data.ConfigSourcesRepositoryImpl
 import com.onthecrow.onthecrowvpn.connection.data.SplitTunnelRepositoryImpl
+import com.onthecrow.onthecrowvpn.connection.data.VpnConsentRepositoryImpl
 import com.onthecrow.onthecrowvpn.connection.data.datastore.ConfigSourcesPreferencesDataSource
 import com.onthecrow.onthecrowvpn.connection.data.subscription.SubscriptionUrlFetcher
 import com.onthecrow.onthecrowvpn.vpn.domain.SplitTunnelRepository
@@ -24,6 +25,7 @@ import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCa
 import com.onthecrow.onthecrowvpn.connection.domain.RefreshSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.RemoveSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.VpnConsentRepository
 import com.onthecrow.onthecrowvpn.datastore.DataStoreFactory
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
@@ -47,6 +49,9 @@ val connectionLogicModule = module {
     single {
         SplitTunnelRepositoryImpl(get(named(VPN_SETTINGS_DATA_STORE_QUALIFIER)), get())
     } bind SplitTunnelRepository::class
+    single {
+        VpnConsentRepositoryImpl(get(named(VPN_SETTINGS_DATA_STORE_QUALIFIER)))
+    } bind VpnConsentRepository::class
     single {
         ConfigSourcesPreferencesDataSource(
             dataStore = get(named(CONNECTION_CONFIG_DATA_STORE_QUALIFIER)),

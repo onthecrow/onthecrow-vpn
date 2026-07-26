@@ -21,6 +21,10 @@ internal sealed interface ConnectionEvent : Event {
     data object OnDisconnectClick : ConnectionEvent
     data object OnSettingsClick : ConnectionEvent
     data object OnSnackbarShown : ConnectionEvent
+    /** User accepted the VPN disclosure; the tunnel connect proceeds and the acceptance is persisted. */
+    data object OnConsentAccepted : ConnectionEvent
+    /** User dismissed the VPN disclosure without accepting (button or back) — no connect. */
+    data object OnConsentDeclined : ConnectionEvent
 
     // Internal events
     /**
@@ -32,4 +36,6 @@ internal sealed interface ConnectionEvent : Event {
     data class OnConnectionStatusChanged(val status: ConnectionStatus) : ConnectionEvent
     data class OnSnackbarRequested(val message: String, val isError: Boolean = false) : ConnectionEvent
     data class OnRefreshStateChanged(val sourceId: String, val refreshing: Boolean) : ConnectionEvent
+    /** Emitted by the ViewModel when Connect is tapped without prior consent; raises the disclosure. */
+    data object OnConsentRequested : ConnectionEvent
 }

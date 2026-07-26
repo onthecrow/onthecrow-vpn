@@ -117,6 +117,16 @@ actual class PlatformXrayEngine : XrayEngine {
         )
         return runCatching {
             registerProtectControllers(libClass)
+            // Idempotent by construction. libXray's runXrayFromJson refuses with "xray is already
+            // running" while a core.Instance is live (xray/xray.go: `if coreServer != nil`), and in a
+            // process that gets reused across generations a stale instance CAN still be running when a
+            // fresh start arrives. In the field that refusal set the retry flag and drove a two-day
+            // reconnect storm. Whatever was running is stale by definition — this start is replacing
+            // it with a new tun fd — so stopping first is always the right thing.
+            if (isRunning() == true) {
+                OtcLog.log(LOG_TAG, "start: an instance is already running — stopping it first")
+                invoke(method = "stopXray")
+            }
             val runtimeJson = withPlatformEnv(xrayJson, includeTunFd = true)
             OtcLog.log(LOG_TAG, "runXrayFromJson: configBytes=${runtimeJson.length} tunFd=$tunFd")
             val response = invoke(

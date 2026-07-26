@@ -11,6 +11,7 @@ import com.onthecrow.onthecrowvpn.connection.domain.RefreshResult
 import com.onthecrow.onthecrowvpn.connection.domain.RefreshSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.RemoveSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.VpnConsentRepository
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
 import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
 import com.onthecrow.onthecrowvpn.navigation.Navigator
@@ -35,6 +36,7 @@ internal class ConnectionViewModel(
     private val collapsedGroupsUseCase: CollapsedGroupsUseCase,
     private val vpnController: VpnController,
     private val vpnPermissionRequester: VpnPermissionRequester,
+    private val vpnConsentRepository: VpnConsentRepository,
     private val navigator: Navigator,
     reducer: ConnectionReducer,
 ) : BaseViewModel<ConnectionEvent, ConnectionState, ConnectionReducer>(reducer) {
@@ -48,6 +50,7 @@ internal class ConnectionViewModel(
                 is ConnectionEvent.OnRefreshSourceClick -> handleRefreshSource(event.sourceId)
                 is ConnectionEvent.OnDeleteSourceClick -> handleDeleteSource(event.sourceId)
                 ConnectionEvent.OnConnectClick -> handleConnectClick()
+                ConnectionEvent.OnConsentAccepted -> handleConsentAccepted()
                 ConnectionEvent.OnDisconnectClick -> handleDisconnectClick()
                 ConnectionEvent.OnSettingsClick -> navigator.navigate(SettingsDestination)
                 else -> Unit
@@ -164,7 +167,26 @@ internal class ConnectionViewModel(
             onEvent(ConnectionEvent.OnSnackbarRequested("Select a configuration first"))
             return
         }
-        viewModelScope.launch { startConnection(cfg) }
+        viewModelScope.launch {
+            // Play's VpnService policy: the prominent disclosure must be shown and consent given
+            // BEFORE the system VpnService.prepare() dialog (which startConnection triggers). Read the
+            // persisted flag authoritatively at tap time — first connect after install raises the
+            // disclosure; every connect after acceptance goes straight through.
+            if (vpnConsentRepository.observe().first()) {
+                startConnection(cfg)
+            } else {
+                onEvent(ConnectionEvent.OnConsentRequested)
+            }
+        }
+    }
+
+    /** Accept persists the grant (so the disclosure never shows again) and continues the connect. */
+    private fun handleConsentAccepted() {
+        viewModelScope.launch {
+            vpnConsentRepository.grant()
+            val cfg = state.value.selectedConfig ?: return@launch
+            startConnection(cfg)
+        }
     }
 
     /** Validate the config's share link, ensure VPN permission, then ask the controller to connect. */

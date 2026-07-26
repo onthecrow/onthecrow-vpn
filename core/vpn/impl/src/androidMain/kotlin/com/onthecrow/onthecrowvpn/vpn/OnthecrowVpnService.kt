@@ -78,6 +78,17 @@ class OnthecrowVpnService : VpnService() {
     @Volatile
     private var engineNetwork: Network? = null
 
+    /**
+     * A trigger that arrived while a recovery held the tunnel, kept so it can be honoured afterwards.
+     * One slot: the strongest kind wins and repeats coalesce, because ten path changes during one
+     * ladder still only warrant one follow-up.
+     */
+    @Volatile
+    private var pendingTrigger: TunnelStart? = null
+
+    @Volatile
+    private var pendingTriggerReason: String = ""
+
     /** TEMP (diagnosis): paces [probeTcpForDiagnosis]. */
     private var keepaliveRounds = 0
 
@@ -266,6 +277,12 @@ class OnthecrowVpnService : VpnService() {
      */
     override fun onRevoke() {
         logd("onRevoke (external teardown) — terminal, not recoverable")
+        // Set here and not inside the coroutine, exactly as the DISCONNECT/REVOKE intents do: the
+        // ladder is NonCancellable and polls this flag at every wait point. Without it a revocation
+        // left it repairing a tunnel whose permission had just been taken away — up to 45s of patience
+        // plus a backoff that reaches five minutes, killing and respawning the engine the whole time,
+        // which is what happens when another VPN app takes over.
+        disconnecting = true
         scope.launch { runUserDisconnect() }
     }
 
@@ -327,31 +344,7 @@ class OnthecrowVpnService : VpnService() {
             runCatching {
                 stopTunnel()
                 AndroidVpnSocketProtector.setProtector(::protectSocket)
-                tunInterface = Builder()
-                    .setSession("Onthecrow VPN")
-                    .setMtu(mtu)
-                    .addAddress(TUN_ADDRESS, 32)
-                    .addRoute("0.0.0.0", 0)
-                    // Claim IPv6 WITHOUT giving the interface a v6 address. Android only routes the
-                    // address families a VPN declares, so without this every v6-capable app talks
-                    // straight past the tunnel — and on a dual-stack network Happy Eyeballs actively
-                    // prefers v6, so that is most of them.
-                    //
-                    // No address is deliberate. With the route but no source address the kernel has
-                    // nothing to bind, so a v6 connect() fails instantly with ENETUNREACH and Happy
-                    // Eyeballs falls straight through to IPv4 — which the tunnel does carry. Giving
-                    // the tun a v6 address instead would make apps PREFER a path we cannot actually
-                    // forward, and they would wait out a timeout on every connection before falling
-                    // back. Carrying v6 properly needs the outbound and the server to support it,
-                    // which is a separate change.
-                    .addRoute("::", 0)
-                    .addDnsServer("1.1.1.1")
-                    // NB: we deliberately do NOT exclude ourselves from the tunnel — our own traffic
-                    // routes through it so the health probe ([probeTunnel]) actually tests the tunnel.
-                    // xray's upstream sockets are protected individually via protectFd (no loop risk).
-                    .apply { applySplitTunnel(this) }
-                    .establish()
-                    ?: error("Android refused to establish VPN interface")
+                tunInterface = establishTun()
                 // netd installs this VPN's per-UID routing rules asynchronously AFTER establish()
                 // returns; [probeTunnel] must not answer inside that window (see PROBE_ESTABLISH_GRACE_MS).
                 lastEstablishAt = SystemClock.elapsedRealtime()
@@ -362,14 +355,20 @@ class OnthecrowVpnService : VpnService() {
                 applyUnderlyingNetworks(lastUnderlying)
                 when (val result = startXrayOnTun(configJson)) {
                     XrayRunResult.Success -> {
+                        // The engine started, so we are out of the "xray failed to start" regime that
+                        // [scheduleRetry] governs — clear it NOW, before [startMonitoring] fires its
+                        // "connected" self-trigger. If the flag were still set there, that trigger would
+                        // route through [retryNow] instead of the probe, re-run this whole connect, and
+                        // do so forever: the probe that would have cleared the flag never runs. That was
+                        // a two-day reconnect storm in the field. From here the keepalive and the
+                        // recovery ladder own the tunnel's health; a probe that never confirms is their
+                        // problem to escalate, not the retry backoff's.
+                        retryPending = false
+                        retryJob?.cancel()
                         // Connected as soon as the engine is up, NOT on the first confirmed probe.
-                        //
-                        // Waiting for the probe was more honest and was a mistake: `Connecting` makes
-                        // the UI's `isBusy` true, which disables the only button on the screen. A
-                        // tunnel whose probe never confirms — a bad config, a blocked server — then
-                        // left the user with no way to cancel, stop or edit anything. Truthful status
-                        // is not worth a dead end, and a probe that fails is reported by the recovery
-                        // ladder anyway.
+                        // Waiting for the probe left the UI's only button disabled with no way out when
+                        // a probe never confirmed (bad config, blocked server); a failing probe is
+                        // reported by the recovery ladder anyway.
                         publishStatus(ConnectionStatus.Connected)
                         logd("connect: xray up")
                         startMonitoring()
@@ -380,6 +379,19 @@ class OnthecrowVpnService : VpnService() {
                 if (error is CancellationException) {
                     logd("runConnect CANCELLED: ${error.message}")
                     throw error
+                }
+                if (error is NotPreparedException) {
+                    // Retrying cannot help: nobody but the user can grant this, and the old behaviour
+                    // was three silent attempts on an escalating backoff that only ended when they
+                    // happened to open the consent screen. The persisted params are deliberately kept
+                    // — the configuration is fine, only the permission is missing.
+                    logd("connect: VPN permission is not granted — waiting for the user, not retrying")
+                    retryPending = false
+                    retryJob?.cancel()
+                    publishStatus(ConnectionStatus.Error("VPN permission is required"))
+                    ServiceCompat.stopForeground(this@OnthecrowVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return@onFailure
                 }
                 logd("runConnect FAILED: ${error.stackTraceToString()}")
                 scheduleRetry(error.message ?: "Failed to start VPN")
@@ -403,13 +415,30 @@ class OnthecrowVpnService : VpnService() {
         .setMtu(mtu)
         .addAddress(TUN_ADDRESS, 32)
         .addRoute("0.0.0.0", 0)
-        // Claim IPv6 WITHOUT giving the interface a v6 address, so a v6 connect fails instantly and
-        // Happy Eyeballs falls through to IPv4 rather than waiting out a path we cannot forward.
+        // Claim IPv6 WITHOUT giving the interface a v6 address. Android only routes the address
+        // families a VPN declares, so without this every v6-capable app talks straight past the
+        // tunnel — and on a dual-stack network Happy Eyeballs actively prefers v6.
+        //
+        // No address is deliberate: with the route but no source address the kernel has nothing to
+        // bind, so a v6 connect() fails instantly and falls through to IPv4, which the tunnel does
+        // carry. Giving the tun a v6 address would make apps PREFER a path we cannot forward.
         .addRoute("::", 0)
         .addDnsServer("1.1.1.1")
+        // Without this the VPN network is metered on EVERY underlying network, including unmetered
+        // Wi-Fi: from targetSdk Q the platform defaults a VpnService network to metered, and it was
+        // visible in the field as `notMetered=false` over a Wi-Fi that reported `notMetered=true`
+        // one line earlier. Apps throttle background work on a metered network and Data Saver blocks
+        // it outright, so the tunnel was quietly imposing that on everything behind it.
+        //
+        // We do not meter anything ourselves; what the traffic costs is a property of the underlying
+        // network, which the platform already folds in.
+        .setMetered(false)
         .apply { applySplitTunnel(this) }
         .establish()
-        ?: error("Android refused to establish VPN interface")
+        // Documented: null means the app is not prepared, or its consent was revoked — never a
+        // transient network problem. [NotPreparedException] keeps that distinct so the retry ladder
+        // does not spend a five-minute backoff on something only the user can fix.
+        ?: throw NotPreparedException()
 
     /**
      * Replace the tun after a recovery that took long enough for apps to give up, so they are told the
@@ -433,26 +462,34 @@ class OnthecrowVpnService : VpnService() {
      * onAvailable pair — in which case this works — or another bare capabilities change, in which case
      * it does not and should be reverted.
      */
-    private suspend fun rebuildTunForApps(reason: String) {
-        val configJson = activeXrayJson ?: return
-        val previous = tunInterface ?: return
+    private suspend fun rebuildTunForApps(reason: String): Boolean {
+        val configJson = activeXrayJson ?: return false
+        val previous = tunInterface ?: return false
         val rebuilt = runCatching { establishTun() }.getOrElse {
             // The old interface is untouched when establish() fails, so the tunnel keeps working.
             logd("tun rebuild($reason) failed, keeping the current interface: ${it.message}")
-            return
+            return false
         }
         tunInterface = rebuilt
         lastEstablishAt = SystemClock.elapsedRealtime()
         logd("tun rebuilt($reason): fd=${rebuilt.fd} (was ${previous.fd})")
-        // The engine is still reading a dup of the OLD interface, which the platform has just
-        // deactivated, so it has to be replaced rather than merely re-pointed.
-        xrayEngine.killEngineProcess()
-        val result = startXrayOnTun(configJson)
-        // Closed only now: the contract is to drain the old descriptor and close it once the new one is
-        // in use, and until the engine is up nothing has taken over reading.
-        runCatching { previous.close() }
-            .onFailure { logd("tun rebuild: closing the old interface threw: ${it.message}") }
-        logd("tun rebuild($reason): engine back on the new interface — $result")
+        return try {
+            // The engine is still reading a dup of the OLD interface, which the platform has just
+            // deactivated, so it has to be replaced rather than merely re-pointed.
+            xrayEngine.killEngineProcess()
+            val result = startXrayOnTun(configJson)
+            logd("tun rebuild($reason): engine back on the new interface — $result")
+            // The caller decides what to do about a failure; what must NOT happen is what happened
+            // before, which was to log it and carry on reporting Connected over a tun nothing reads.
+            result is XrayRunResult.Success
+        } finally {
+            // In the finally, because a throw between here and there used to leak this descriptor for
+            // good — in a process that no longer dies, one per rebuild against a limit of 1024. The
+            // contract is to close the old one once the new interface is the live one, which it is
+            // from the moment establish() returned.
+            runCatching { previous.close() }
+                .onFailure { logd("tun rebuild: closing the old interface threw: ${it.message}") }
+        }
     }
 
     private suspend fun startXrayOnTun(configJson: String): XrayRunResult {
@@ -486,10 +523,11 @@ class OnthecrowVpnService : VpnService() {
                 keepAlivePeriodSeconds = QUIC_KEEPALIVE_PERIOD_S,
             ),
         )
-        // TEMP (diagnosis): fingerprint of the client credential actually handed to xray — verifies a
-        // config switch really reaches the engine (per-client id/password/auth differ; prefix only).
-        val cred = CREDENTIAL_REGEX.find(runtimeJson)?.groupValues?.get(2)
-        logd("xray start: client-credential=${cred?.take(6) ?: "?"}… (xray loglevel=$logLevel)")
+        // Whether a config switch reached the engine is confirmed by the runtimeJson dump below (debug
+        // only) and by xray's own banner — NOT by fingerprinting the credential. The log ships in
+        // release and users are asked to share it, so even a 6-char prefix of a per-client secret does
+        // not belong in it.
+        logd("xray start: xray loglevel=$logLevel")
         // TEMP (diagnosis): dump the config we actually hand to xray, once per process, so the emitted
         // transport settings can be checked against what we think we generated.
         //
@@ -543,9 +581,10 @@ class OnthecrowVpnService : VpnService() {
                 parentFile?.mkdirs()
                 createNewFile()
             }
-            // World-readable so `adb pull` and file managers still work on a debug build; the release
-            // path for getting this file is the share sheet in settings.
-            runCatching { setReadable(true, false) }
+            // Debug only. World-readable lets `adb pull` and file managers reach the log while
+            // instrumenting; in release the file stays app-private and the only way out is the share
+            // sheet in settings, which grants access per-URI.
+            if (OtcLog.isDebugBuild) runCatching { setReadable(true, false) }
         }.absolutePath
     }.getOrElse {
         logd("log file prepare FAILED: ${it.message}")
@@ -602,38 +641,6 @@ class OnthecrowVpnService : VpnService() {
         val result = xrayEngine.stop()
         engineNetwork = null
         logd("xray stop: $result")
-        return result is XrayRunResult.Success
-    }
-
-    /**
-     * Re-dial xray on the EXISTING tun — the cheap repair, and the only one that does not make the
-     * system VPN icon blink.
-     *
-     * This became possible with libXray v26.7.11: `AlwaysOnInboundHandler.Close` now calls
-     * `common.Close(h.proxy)`, which reaches `proxy/tun.Handler.Close` and shuts the gVisor stack
-     * down. Before that the tun readers outlived every stop, so a second instance split the packets
-     * with a dead one and roughly half of them vanished — which is why this path was deleted once.
-     *
-     * The tun itself is never touched, so `establish()` is not called again, the VPN network is never
-     * torn down, and nothing escapes while the engine restarts. Returns false if xray could not be
-     * stopped cleanly; the caller then falls through to the process restart, which remains the only
-     * thing guaranteed to clear state that got stuck.
-     */
-    private suspend fun runRedial(): Boolean {
-        val configJson = activeXrayJson ?: run {
-            logd("runRedial: no active config")
-            return false
-        }
-        if (tunInterface == null) {
-            logd("runRedial: no tun interface")
-            return false
-        }
-        if (!stopXray()) {
-            logd("runRedial: xray did not stop cleanly — leaving it to the process restart")
-            return false
-        }
-        val result = startXrayOnTun(configJson)
-        logd("runRedial: $result")
         return result is XrayRunResult.Success
     }
 
@@ -705,6 +712,10 @@ class OnthecrowVpnService : VpnService() {
     // handover while the screen is off is exactly the case that has to work — and is cancelled only on
     // disconnect.
 
+    /**
+     * DECLARATION ORDER IS LOAD-BEARING: a deferred trigger is coalesced with `maxOf`, so these must
+     * stay sorted from weakest to strongest response.
+     */
     private enum class TunnelStart {
         /** Just connected & known healthy — go straight to keepalive (don't re-probe immediately). */
         KEEPALIVE_ONLY,
@@ -732,10 +743,14 @@ class OnthecrowVpnService : VpnService() {
         PATH_CHANGED,
     }
 
-    private fun startTunnelJob(reason: String, start: TunnelStart) {
-        // A retry is sitting out its backoff and something just changed — that is exactly the moment
-        // worth trying again, rather than waiting for a timer that knows nothing about the network.
-        if (retryPending) {
+    private fun startTunnelJob(reason: String, start: TunnelStart, externalTrigger: Boolean = true) {
+        // A retry is sitting out its backoff and an EXTERNAL event just changed the situation — a
+        // network appeared, the screen came on — so try again now rather than wait out a timer that
+        // knows nothing about the network. But NOT for the self-triggers a successful connect fires on
+        // its own way out ("connected", "network confirmed"): those are not new events, and routing
+        // them through retryNow re-ran the connect that had just succeeded. A.1 already clears the flag
+        // before those fire; this is the second lock on the same door.
+        if (retryPending && externalTrigger) {
             retryNow(reason)
             return
         }
@@ -749,31 +764,55 @@ class OnthecrowVpnService : VpnService() {
         // ladder's own probes. That is exactly what the field log shows at 09:26. The ladder's probes
         // read current reality anyway, and its job falls through to the keepalive when it finishes.
         if (recovering.get()) {
-            logd("startTunnelJob($reason/$start) ignored — a recovery already owns the tunnel")
+            // Deferred, not dropped. The running ladder cannot know about a path that moved after it
+            // started, and a lost PATH_CHANGED means the apps behind us are never told the network is
+            // back. In the field two of these arrived 130ms apart and it only worked out by accident.
+            //
+            // One slot, strongest wins: PATH_CHANGED > FORCE_RECOVER > PROBE_FIRST. Coalescing is the
+            // point — ten changes during one ladder deserve one follow-up, not ten.
+            val deferred = maxOf(start, pendingTrigger ?: start)
+            if (start != TunnelStart.KEEPALIVE_ONLY) {
+                pendingTrigger = deferred
+                pendingTriggerReason = reason
+                logd("startTunnelJob($reason/$start) deferred — a recovery already owns the tunnel")
+            } else {
+                logd("startTunnelJob($reason/$start) ignored — a recovery already owns the tunnel")
+            }
             return
         }
         if (tunnelJob?.isActive == true) logd("startTunnelJob($reason): cancelling in-flight tunnel job")
         tunnelJob?.cancel()
         logd("startTunnelJob: reason=$reason start=$start")
         tunnelJob = scope.launch {
-            when (start) {
+            // try/finally, because the keepalive is the ONLY thing watching the tunnel once the ladder
+            // is done. Anything thrown below used to skip it and land in the scope's exception handler,
+            // which merely logs — leaving a live tun, no engine and no watcher until an unrelated
+            // trigger happened to fire. The watcher outranks whatever went wrong on the way to it.
+            try {
+                when (start) {
                 // recover() kills the process if it proceeds; if it's debounced it returns and we fall
                 // through to keepAliveLoop so the (still-alive) process keeps watching.
-                TunnelStart.FORCE_RECOVER -> recover(reason)
-                TunnelStart.PATH_CHANGED -> recover(reason, rebuildTun = true)
-                TunnelStart.PROBE_FIRST -> when (probeTunnel(PROBE_TIMEOUT_MS)) {
-                    true -> {
-                        logd("$reason: tunnel already healthy")
-                        noteTunnelHealthy()
+                    TunnelStart.FORCE_RECOVER -> recover(reason)
+                    TunnelStart.PATH_CHANGED -> recover(reason, rebuildTun = true)
+                    TunnelStart.PROBE_FIRST -> when (probeTunnel(PROBE_TIMEOUT_MS)) {
+                        true -> {
+                            logd("$reason: tunnel already healthy")
+                            noteTunnelHealthy()
+                        }
+                        false -> {
+                            logd("$reason: no answer on first ask — handing to the ladder")
+                            recover(reason)
+                        }
+                        null -> logd("$reason: no verdict — leaving it to the keepalive")
                     }
-                    false -> {
-                        logd("$reason: no answer on first ask — handing to the ladder")
-                        recover(reason)
-                    }
-                    null -> logd("$reason: no verdict — leaving it to the keepalive")
+                    TunnelStart.KEEPALIVE_ONLY -> logd("$reason: starting keepalive watch")
                 }
-                TunnelStart.KEEPALIVE_ONLY -> logd("$reason: starting keepalive watch")
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Throwable) {
+                logd("$reason: recovery threw (${error.javaClass.simpleName}: ${error.message}) — watching anyway")
             }
+            drainPendingTrigger()
             keepAliveLoop()
         }
     }
@@ -787,24 +826,34 @@ class OnthecrowVpnService : VpnService() {
      * recovery through it was three stacked ways to fail.
      *
      *   T0  probe, patiently                 up to [T0_PATIENCE_MS]   is it dead, or just not up yet?
-     *   T1  re-dial the engine on our tun    ~2s                      cheap, and so far never effective
-     *   T2  restart the process              backed off, uncapped     the one that has always worked
+     *   T2  replace the engine process       backed off, uncapped     the repair
      *
      * T0 owns most of the budget on purpose. Every probe failure ever recorded in the field was a
      * timeout rather than an error, so "no answer" cannot distinguish a broken path from one that has
-     * not finished coming up — and the day the ladder was written that distinction was collapsed into
-     * 1.9 seconds, which is far shorter than a cellular attach. The result was a repair loop that fired
-     * on healthy tunnels, killed the process ~37 times a day, and in the one incident traced end to end
-     * fixed nothing: the tunnel that finally worked was identical to the two that were killed before it,
-     * just started 23 seconds later.
+     * not finished coming up — and collapsing that distinction into 1.9 seconds, as the first version
+     * did, produced a repair loop that fired on healthy tunnels and killed the process ~37 times a day
+     * without fixing anything.
      *
-     * The old note here claimed no in-process tier was possible because xray's tun readers outlive
-     * `stopXray`. That was true of libXray 26.3.27 and is NOT true of 26.7.11: `tun.Handler.Close`
-     * reaches `stackGVisor.Close`, which calls `endpoint.Attach(nil)` — that signals the dispatcher's
-     * eventfd and joins the goroutine before returning. The reader really is gone. Why T1 nonetheless
-     * produces a tunnel that carries nothing is still unexplained (0 for 2 in the field, with no
-     * outbound socket created at all afterwards); the xray-side log that would answer it is only now
-     * being kept in release builds.
+     * There used to be a T1 between them: stop and restart the engine inside its own process. It is
+     * gone. Across five field logs T0 never once failed, so T1 never ran; and it could not have helped
+     * anyway, because the one piece of state a restart has to clear does not live in the engine
+     * instance (see below).
+     *
+     * WHY THE ENGINE NEEDS A WHOLE FRESH PROCESS. Two earlier explanations were written here and both
+     * are false for libXray v26.7.11 — recorded because they were load-bearing and wrong:
+     *
+     *   - "tun.Handler has no Close, so the gVisor readers outlive stopXray". It does have one
+     *     (proxy/tun/handler.go:216), and the chain reaches endpoint.Attach(nil), which signals the
+     *     dispatcher's eventfd and joins the goroutines. That was true of 26.3.27, not of this version.
+     *   - "hysteria2's client pool is behind a sync.Once, so a second start reuses the session". The
+     *     Once guards only the map's creation, and the key is a dialerConf holding a POINTER to the
+     *     MemoryStreamConfig — a new core.Instance builds a new one, so a client is never reused.
+     *
+     * The real reason is narrower and worse: nothing is ever deleted from that map
+     * (transport/internet/hysteria/dialer.go — no `delete(` anywhere), and the janitor only closes
+     * clients whose connection has gone Inactive. With keepAlivePeriod=3s an orphaned connection keeps
+     * sending PINGs and never goes Inactive, so a stopped engine leaves an immortal session still
+     * talking to the server. Only process death reaps it.
      *
      * Runs NonCancellable under [operationMutex] with a wakelock held: a recovery interrupted halfway
      * (by a screen event, a competing trigger, or CPU suspend) leaves the tunnel worse off than one
@@ -893,14 +942,24 @@ class OnthecrowVpnService : VpnService() {
             if (probeTunnel(timeout) == true) {
                 logd("recover($reason): T0 OK — alive after ${elapsed()}ms (attempt ${attempt + 1})")
                 onRecoverySucceeded()
-                // TEMP (experiment): unconditional for a path change.
+                // Rebuilt on EVERY confirmed move, with no health test in front of it.
                 //
-                // It was gated on the tunnel having been down for [TUN_REBUILD_AFTER_OUTAGE_MS], on the
-                // theory that only apps turned away by a dead tunnel need telling. That gate never
-                // fires any more — recovery now completes in about a tenth of a second — and the
-                // symptom survives anyway, which is itself the finding: whatever Telegram is waiting
-                // for, it is not the tunnel coming back.
-                if (rebuildTun) rebuildTunForApps(reason)
+                // Gating this on "the tunnel was actually down" was tried and is wrong twice over.
+                // Wrong in principle: apps need the signal because THEIR network changed transport,
+                // which has nothing to do with whether our tunnel stayed up. And wrong in practice,
+                // measured — skipping the rebuild leaves [engineNetwork] pointing at the network the
+                // engine still runs on, so the next switch BACK to it compares equal and is not seen
+                // as a move at all. In the field: rebuilt on cellular 190, moved to Wi-Fi 192 with a
+                // first-probe pass so no rebuild, then back to 190 — reported as "confirmed" rather
+                // than "MOVED", no signal, and Telegram stayed dead.
+                //
+                // The cost is real and accepted: ~600-850ms with the engine restarting, and a window
+                // of roughly 90ms in which the physical interface is the default. Both are paid during
+                // a switch that has already broken every connection the tunnel was carrying.
+                if (rebuildTun && !rebuildTunForApps(reason)) {
+                    logd("recover($reason): tun rebuilt but the engine did not come back — escalating")
+                    restartEngineForRecovery(reason)
+                }
                 return
             }
             attempt++
@@ -912,25 +971,6 @@ class OnthecrowVpnService : VpnService() {
         }
         logd("recover($reason): T0 dead — $attempt probes over ${awakeElapsed()}ms awake of ${patienceMs}ms")
 
-        // T1 — re-dial the engine on the tun we already have. Costs no icon blink and no unprotected
-        // window, because the tun is never rebuilt. Falls through if xray would not stop cleanly.
-        //
-        // On the record so far this rung has never once worked: 0 for 2 in the field, both times with no
-        // outbound socket created at all after the redial (the engine is restarted and then nothing
-        // reaches it). The mechanism is not established — xray's own log is where the answer would be,
-        // and in release builds we were not keeping one. It stays because it is cheap now that T0 has
-        // already spent its patience, and because the next log will settle whether to fix it or drop it.
-        if (runRedial()) {
-            for (wait in T1_PROBE_DELAYS_MS) {
-                delay(wait)
-                if (probeTunnel(PROBE_TIMEOUT_STEPS_MS.last()) == true) {
-                    logd("recover($reason): T1 OK after ${elapsed()}ms")
-                    onRecoverySucceeded()
-                    return
-                }
-            }
-        }
-
         // T2 — throw the ENGINE process away and start a fresh one on the tun we still hold.
         //
         // This used to kill THIS process and have an AlarmManager resurrect it, which worked but tore
@@ -939,15 +979,15 @@ class OnthecrowVpnService : VpnService() {
         // closed, nothing is re-established, and there is nothing to schedule — which is also why the
         // alarm, `SCHEDULE_EXACT_ALARM` and the battery-optimisation exemption are all gone.
         if (disconnecting) return logd("recover($reason): standing down — user is disconnecting")
-        // Re-checked here and not only above, because T1 itself contains waits and the device can fall
-        // asleep inside them — that is precisely how a restart once fired on 75-minute-old evidence.
+        // Re-checked here and not only above, because T0's patience contains waits and the device can
+        // fall asleep inside them — that is precisely how a restart once fired on 75-minute-old evidence.
         if (sleptMs() > LADDER_ABANDON_SLEEP_MS) {
             return logd("recover($reason): abandoning before T2 — device slept ${sleptMs()}ms mid-ladder")
         }
         if (refreshUnderlyingFromSystem() == null) {
             return logd("recover($reason): no underlying network — not restarting into an outage")
         }
-        logd("recover($reason): T1 dead (${elapsed()}ms) → T2 engine restart")
+        logd("recover($reason): T0 dead (${elapsed()}ms) → T2 engine restart")
         restartEngineForRecovery(reason)
     }
 
@@ -986,7 +1026,7 @@ class OnthecrowVpnService : VpnService() {
         delay(backoff)
         if (disconnecting) return logd("T2 restart: standing down — user is disconnecting")
         restartEngine(reason) ?: return
-        for (wait in T1_PROBE_DELAYS_MS) {
+        for (wait in ENGINE_PROBE_DELAYS_MS) {
             delay(wait)
             if (probeTunnel(PROBE_TIMEOUT_STEPS_MS.last()) == true) {
                 logd("T2 restart: confirmed alive")
@@ -1132,6 +1172,31 @@ class OnthecrowVpnService : VpnService() {
      * point: it bounds the dead window at ~[KEEPALIVE_INTERVAL_SCREEN_OFF_MS] of AWAKE time instead of
      * "until the user unlocks".
      */
+    /**
+     * Honour whatever arrived while the ladder held the tunnel.
+     *
+     * Run here rather than by posting a fresh job, because this coroutine already owns the sequence:
+     * a new job would be cancelled by the next trigger anyway, and the `recovering` flag has only just
+     * been released. Loops, because a change can land while we are servicing the previous one; each
+     * pass clears the slot first, so it terminates as soon as nothing new arrives.
+     */
+    private suspend fun drainPendingTrigger() {
+        while (true) {
+            val start = pendingTrigger ?: return
+            val reason = pendingTriggerReason
+            pendingTrigger = null
+            if (disconnecting || activeXrayJson == null) return
+            logd("deferred trigger: $reason/$start")
+            when (start) {
+                TunnelStart.PATH_CHANGED -> recover(reason, rebuildTun = true)
+                TunnelStart.FORCE_RECOVER -> recover(reason)
+                TunnelStart.PROBE_FIRST ->
+                    if (probeTunnel(PROBE_TIMEOUT_MS) == false) recover(reason) else noteTunnelHealthy()
+                TunnelStart.KEEPALIVE_ONLY -> Unit
+            }
+        }
+    }
+
     private suspend fun keepAliveLoop() {
         var fails = 0
         while (true) {
@@ -1323,7 +1388,7 @@ class OnthecrowVpnService : VpnService() {
         // Probe rather than assume: this is what turns Connecting into Connected, so it has to run now
         // and not after one keepalive interval. On a warm path it answers in ~110ms; on a cold one the
         // ladder's patience carries it, which is the same thing the user would otherwise sit through.
-        startTunnelJob("connected", TunnelStart.PROBE_FIRST)
+        startTunnelJob("connected", TunnelStart.PROBE_FIRST, externalTrigger = false)
     }
 
     /**
@@ -1379,7 +1444,8 @@ class OnthecrowVpnService : VpnService() {
             addAction(Intent.ACTION_SCREEN_OFF)
         }
         runCatching { registerReceiver(receiver, filter) }
-        screenReceiver = receiver
+            .onSuccess { screenReceiver = receiver }
+            .onFailure { logd("could not register the screen receiver (${it.message}) — that trigger is lost") }
     }
 
     /**
@@ -1405,7 +1471,8 @@ class OnthecrowVpnService : VpnService() {
         }
         val filter = IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
         runCatching { registerReceiver(receiver, filter) }
-        idleModeReceiver = receiver
+            .onSuccess { idleModeReceiver = receiver }
+            .onFailure { logd("could not register the idle-mode receiver (${it.message}) — that trigger is lost") }
     }
 
     /**
@@ -1623,8 +1690,8 @@ class OnthecrowVpnService : VpnService() {
                 logd("apps-eye: blocked=$blocked on $network")
             }
         }
-        appsEyeViewCallback = callback
         runCatching { connectivityManager().registerDefaultNetworkCallback(callback) }
+            .onSuccess { appsEyeViewCallback = callback }
             .onFailure { logd("apps-eye: could not register (${it.message})") }
     }
 
@@ -1693,8 +1760,11 @@ class OnthecrowVpnService : VpnService() {
                 validatedUnderlying = network
                 adoptUnderlying(network)
                 startTunnelJob(
-                    if (moved) "path changed" else "network confirmed",
-                    if (moved) TunnelStart.PATH_CHANGED else TunnelStart.PROBE_FIRST,
+                    reason = if (moved) "path changed" else "network confirmed",
+                    start = if (moved) TunnelStart.PATH_CHANGED else TunnelStart.PROBE_FIRST,
+                    // A real move is an external event and may cut a pending retry's backoff short; a
+                    // confirmation of the network the engine already runs on is not.
+                    externalTrigger = moved,
                 )
             }
 
@@ -1750,11 +1820,14 @@ class OnthecrowVpnService : VpnService() {
                 applyUnderlyingNetworks(replacement)
             }
         }
-        networkCallback = callback
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
+        // The field is assigned only on success, and a failure is loud. It used to be set first and
+        // the result discarded, so a refused registration left `networkCallback != null` — which is
+        // the early-return guard at the top of this method — and the service ran for the rest of the
+        // session with no network triggers at all and not one line saying so.
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // Single best-matching underlying network — behaves like a default callback.
@@ -1766,7 +1839,8 @@ class OnthecrowVpnService : VpnService() {
             } else {
                 connectivityManager().registerNetworkCallback(request, callback)
             }
-        }
+        }.onSuccess { networkCallback = callback }
+            .onFailure { logd("FATAL: no underlying-network callback (${it.message}) — recovery is blind") }
     }
 
     /**
@@ -1839,6 +1913,9 @@ class OnthecrowVpnService : VpnService() {
 
     // TEMP (diagnosis): all service logs go to the unified, process-tagged, flush-per-line file logger
     // (vpn-debug.log) plus Logcat. Remove this and all logd() call sites once recovery is confirmed.
+    /** `establish()` returned null: the app is not prepared or was revoked. Not a network failure. */
+    private class NotPreparedException : IllegalStateException("VPN permission is not granted")
+
     private fun logd(message: String) = OtcLog.log(TAG, message)
 
     private fun startAsForeground() {
@@ -1918,7 +1995,7 @@ class OnthecrowVpnService : VpnService() {
         private const val WAKELOCK_TAG = "OnthecrowVPN:recovery"
 
         // Safety net only (the wakelock is released in a `finally`), but it MUST outlast the whole
-        // ladder: T0's patience is [T0_PATIENCE_MS] of awake time and T1 adds ~2s of probes on top. If
+        // ladder: T0's patience is [T0_PATIENCE_MS] of awake time, plus the engine restart after it. If
         // it expired first the CPU could suspend mid-recovery, and the ladder would then abandon itself
         // over sleep that its own short wakelock had caused.
         private const val RECOVERY_WAKELOCK_TIMEOUT_MS = 60_000L
@@ -1958,9 +2035,9 @@ class OnthecrowVpnService : VpnService() {
         // ever acts on evidence from a previous Doze window.
         private const val LADDER_ABANDON_SLEEP_MS = 20_000L
 
-        // How long T1 gives a fresh dial to come up before handing over to the process restart. A
-        // measured cold hysteria2 handshake was ~250ms; this waits out three of them.
-        private val T1_PROBE_DELAYS_MS = longArrayOf(500L, 500L, 1_000L)
+        // How long a freshly restarted engine gets to prove itself before we call the attempt failed.
+        // A measured cold hysteria2 handshake was ~250ms; this waits out three of them.
+        private val ENGINE_PROBE_DELAYS_MS = longArrayOf(500L, 500L, 1_000L)
 
         // The tun's own address. Shared with the Builder so the probe's "am I actually on the tunnel?"
         // assertion can never drift from what we configured.

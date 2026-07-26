@@ -22,12 +22,12 @@ private const val LOG_TAG = "XRAYSVC"
 /**
  * Hosts libXray, and nothing else, in the `:xray` process.
  *
- * The point of the separate process is that it can be killed. xray-core keeps state that outliving a
- * `stopXray` is not a bug but its design — package-level globals behind `sync.Once`, notably
- * hysteria2's client-manager pool — so the only way to guarantee a genuinely fresh engine is a fresh
- * process. Before the split that meant killing the process that also held the tun, which tore the VPN
- * down and blinked the system's VPN icon. Here it costs nothing visible: the app process keeps the tun
- * open across the restart.
+ * The point of the separate process is that it can be killed, because nothing is ever deleted from hysteria2's client-pool map, and its janitor only closes clients
+whose connection has gone Inactive — which one kept alive by a 3s keepalive never does.
+ * A stopped engine therefore leaves an immortal session still talking to the server, and only process
+ * death reaps it. Before the split that meant killing the process that also held the tun, which tore
+ * the VPN down and blinked the system's VPN icon. Here it costs nothing visible: the app process keeps
+ * the tun open across the restart.
  *
  * Deliberately NOT a foreground service. It does not need its own notification; it stays alive because
  * the app process binds it with BIND_IMPORTANT while running its own foreground service. Making it a

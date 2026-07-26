@@ -58,6 +58,13 @@ internal class ConnectionReducer : Reducer<ConnectionState, ConnectionEvent> {
 
         ConnectionEvent.OnSnackbarShown -> state.copy(snackbar = null)
 
+        // Consent disclosure visibility. Accept also flips it off (the ViewModel then persists the
+        // grant and proceeds with the connect); dismiss flips it off with nothing further.
+        ConnectionEvent.OnConsentRequested -> state.copy(showConsent = true)
+        ConnectionEvent.OnConsentAccepted,
+        ConnectionEvent.OnConsentDeclined,
+        -> state.copy(showConsent = false)
+
         // Side-effect-only events: handled in the ViewModel, no state change here.
         is ConnectionEvent.OnAddFromClipboard,
         is ConnectionEvent.OnConfigSelected,

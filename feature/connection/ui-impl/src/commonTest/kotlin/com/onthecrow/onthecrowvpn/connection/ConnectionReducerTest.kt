@@ -99,7 +99,9 @@ internal class ConnectionReducerTest {
             ConnectionEvent.OnConnectionStatusChanged(ConnectionStatus.PreparingPermission),
         )
         assertTrue(state.isBusy)
-        assertFalse(state.canConnect)
+        // The button stays live mid-transition (canConnect no longer gates on !isBusy): a transition
+        // shows progress but must never remove the only way out. See ConnectionState.canConnect.
+        assertTrue(state.canConnect)
 
         state = reducer.reduce(state, ConnectionEvent.OnConnectionStatusChanged(ConnectionStatus.Connected))
         assertTrue(state.isConnected)

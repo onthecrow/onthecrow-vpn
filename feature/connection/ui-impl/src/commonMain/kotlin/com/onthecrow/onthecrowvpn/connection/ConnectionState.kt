@@ -27,6 +27,12 @@ internal data class ConnectionState(
     val refreshingSourceIds: Set<String> = emptySet(),
     val connectionStatus: ConnectionStatus = ConnectionStatus.Disconnected,
     val snackbar: SnackbarNotice? = null,
+    /**
+     * The full-screen VPN disclosure/consent step is showing. Raised when the user taps Connect before
+     * having accepted the disclosure; cleared on accept or dismiss. Play's VpnService policy requires
+     * this to precede the system `VpnService.prepare()` dialog.
+     */
+    val showConsent: Boolean = false,
 ) : State {
     val hasAnySource: Boolean get() = groups.isNotEmpty()
 

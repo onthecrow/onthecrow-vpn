@@ -9,6 +9,7 @@ import com.onthecrow.onthecrowvpn.connection.domain.RefreshResult
 import com.onthecrow.onthecrowvpn.connection.domain.RefreshSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.RemoveSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.SelectConfigUseCase
+import com.onthecrow.onthecrowvpn.connection.domain.VpnConsentRepository
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRow
 import com.onthecrow.onthecrowvpn.connection.model.ConfigSourcesState
@@ -22,6 +23,7 @@ import com.onthecrow.onthecrowvpn.vpn.VpnPermissionRequester
 import com.onthecrow.onthecrowvpn.vpn.VpnPermissionResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -146,9 +148,87 @@ internal class ConnectionViewModelTest {
         assertEquals(SnackbarNotice("Clipboard is empty", isError = true), viewModel.state.value.snackbar)
     }
 
+    @Test
+    fun connectWithoutConsentRaisesDisclosureAndDoesNotConnect() = runTest(dispatcher) {
+        val sourcesFlow = MutableStateFlow(
+            ConfigSourcesState(
+                groups = listOf(group("s1")),
+                selected = ConfigRef("s1", "c1"),
+                selectedConfig = config("c1"),
+            ),
+        )
+        val controller = FakeVpnController()
+        val viewModel = createViewModel(
+            sourcesFlow,
+            vpnController = controller,
+            consentRepository = FakeVpnConsentRepository(granted = false),
+        )
+        advanceUntilIdle()
+
+        viewModel.onEvent(ConnectionEvent.OnConnectClick)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.showConsent)
+        assertEquals(0, controller.connectCount)
+    }
+
+    @Test
+    fun acceptingConsentPersistsThenConnects() = runTest(dispatcher) {
+        val sourcesFlow = MutableStateFlow(
+            ConfigSourcesState(
+                groups = listOf(group("s1")),
+                selected = ConfigRef("s1", "c1"),
+                selectedConfig = config("c1"),
+            ),
+        )
+        val controller = FakeVpnController()
+        val consent = FakeVpnConsentRepository(granted = false)
+        val viewModel = createViewModel(
+            sourcesFlow,
+            vpnController = controller,
+            consentRepository = consent,
+        )
+        advanceUntilIdle()
+
+        viewModel.onEvent(ConnectionEvent.OnConnectClick)
+        advanceUntilIdle()
+        viewModel.onEvent(ConnectionEvent.OnConsentAccepted)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.showConsent)
+        assertTrue(consent.granted.value)
+        assertEquals(1, controller.connectCount)
+    }
+
+    @Test
+    fun connectWithPriorConsentSkipsDisclosure() = runTest(dispatcher) {
+        val sourcesFlow = MutableStateFlow(
+            ConfigSourcesState(
+                groups = listOf(group("s1")),
+                selected = ConfigRef("s1", "c1"),
+                selectedConfig = config("c1"),
+            ),
+        )
+        val controller = FakeVpnController()
+        val viewModel = createViewModel(
+            sourcesFlow,
+            vpnController = controller,
+            consentRepository = FakeVpnConsentRepository(granted = true),
+        )
+        advanceUntilIdle()
+
+        viewModel.onEvent(ConnectionEvent.OnConnectClick)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value.showConsent)
+        assertEquals(1, controller.connectCount)
+    }
+
     private fun createViewModel(
         sourcesFlow: MutableStateFlow<ConfigSourcesState>,
         addSourceUseCase: AddSourceUseCase = NoopAddSourceUseCase,
+        vpnController: VpnController = FakeVpnController(),
+        consentRepository: VpnConsentRepository = FakeVpnConsentRepository(granted = true),
     ): ConnectionViewModel = ConnectionViewModel(
         observeConfigSourcesUseCase = ObserveConfigSourcesUseCase { sourcesFlow },
         addSourceUseCase = addSourceUseCase,
@@ -157,8 +237,9 @@ internal class ConnectionViewModelTest {
         selectConfigUseCase = SelectConfigUseCase { },
         prepareConnectionConfigUseCase = PrepareConnectionConfigUseCase { ConfigValidationResult.Valid("{}") },
         collapsedGroupsUseCase = NoopCollapsedGroupsUseCase,
-        vpnController = FakeVpnController(),
+        vpnController = vpnController,
         vpnPermissionRequester = FakeVpnPermissionRequester(),
+        vpnConsentRepository = consentRepository,
         navigator = FakeNavigator(),
         reducer = ConnectionReducer(),
     )
@@ -181,12 +262,27 @@ internal class ConnectionViewModelTest {
 
     private class FakeVpnController : VpnController {
         override val status = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
-        override suspend fun connect(xrayJson: String): ConnectResult = ConnectResult.Started
+        var connectCount = 0
+            private set
+
+        override suspend fun connect(xrayJson: String): ConnectResult {
+            connectCount++
+            return ConnectResult.Started
+        }
+
         override suspend fun disconnect() = Unit
     }
 
     private class FakeVpnPermissionRequester : VpnPermissionRequester {
         override suspend fun requestPermission(): VpnPermissionResult = VpnPermissionResult.Granted
+    }
+
+    private class FakeVpnConsentRepository(granted: Boolean) : VpnConsentRepository {
+        val granted = MutableStateFlow(granted)
+        override fun observe(): Flow<Boolean> = granted
+        override suspend fun grant() {
+            granted.value = true
+        }
     }
 
     private fun config(id: String) = RemoteConfig(id = id, name = "Server", url = "vless://x")

@@ -79,6 +79,17 @@ internal class RemoteXrayEngine(
 
     private val context: Context get() = AndroidXrayEnvironment.applicationContext
 
+    /**
+     * Serialises whole engine operations — validate, start, stop, kill — against each other.
+     *
+     * [connectionMutex] only ever covered the bind inside [binder], so a kill could still land BETWEEN
+     * a start's bind and its START transaction, killing the very process the start was talking to (or a
+     * suicide landing on a freshly-bound one). This holds for the entire operation, so a kill waits for
+     * an in-flight start to finish and vice versa. Always the OUTER lock; [connectionMutex] stays the
+     * inner one taken by [binder], and the ordering never inverts, so there is no deadlock.
+     */
+    private val opMutex = Mutex()
+
     private val connectionMutex = Mutex()
 
     @Volatile
@@ -142,7 +153,7 @@ internal class RemoteXrayEngine(
         }
     }
 
-    override suspend fun validate(rawConfig: String): XrayValidationResult {
+    override suspend fun validate(rawConfig: String): XrayValidationResult = opMutex.withLock {
         val response = invoke(IpcRequest(XrayIpc.METHOD_VALIDATE, rawConfig))
             ?: return XrayValidationResult.Invalid("Configuration engine is unavailable")
         if (!response.ok) {
@@ -173,13 +184,23 @@ internal class RemoteXrayEngine(
      */
     suspend fun startOnTun(tun: ParcelFileDescriptor, xrayJson: String): XrayRunResult =
         tun.use {
-            val response = invoke(IpcRequest(XrayIpc.METHOD_START, xrayJson), it)
-                ?: return XrayRunResult.Failure("Engine process is unavailable")
-            if (!response.ok) return XrayRunResult.Failure(response.error ?: "Engine failed to start")
-            response.run?.toDomain() ?: XrayRunResult.Failure("Engine returned nothing")
+            opMutex.withLock {
+                val response = invoke(IpcRequest(XrayIpc.METHOD_START, xrayJson), it)
+                    ?: return@withLock XrayRunResult.Failure("Engine process is unavailable")
+                if (!response.ok) return@withLock XrayRunResult.Failure(response.error ?: "Engine failed to start")
+                response.run?.toDomain() ?: XrayRunResult.Failure("Engine returned nothing")
+            }
         }
 
-    override suspend fun stop(): XrayRunResult {
+    override suspend fun stop(): XrayRunResult = opMutex.withLock {
+        // Nothing bound means nothing to stop. Without this check `invoke` -> `binder()` ->
+        // `bindService(BIND_AUTO_CREATE)` STARTS the engine process for the sole purpose of telling it
+        // to stop, and then it is killed again: seven fork/stop/suicide cycles in seven seconds appear
+        // in the field log, ~500ms each, all of them pointless.
+        if (engine?.isBinderAlive != true) {
+            OtcLog.log(LOG_TAG, "stop: no engine bound — nothing to stop")
+            return XrayRunResult.Success
+        }
         val response = invoke(IpcRequest(XrayIpc.METHOD_STOP))
             ?: return XrayRunResult.Failure("Engine process is unavailable")
         if (!response.ok) return XrayRunResult.Failure(response.error ?: "Engine failed to stop")
@@ -195,13 +216,13 @@ internal class RemoteXrayEngine(
      * holding the tun. Now the tun stays open in this process, so the restart is invisible: no icon
      * blink, no re-establish, no unprotected window, and nothing to schedule.
      *
-     * Why a kill and not `stopService`/`startService`: xray-core keeps package-level state that
-     * stopping it does not reap (hysteria2's client-manager pool behind a `sync.Once`). Android keeps
-     * a serviced process cached, so a service restart would very likely land back in the SAME process
-     * with that state intact — which is precisely the failure the restart is meant to clear. Only
-     * process death is a guarantee.
+     * Why a kill and not `stopService`/`startService`: nothing is ever deleted from hysteria2's client-pool map, and its janitor only closes clients
+whose connection has gone Inactive — which one kept alive by a 3s keepalive never does.
+     * Android keeps a serviced process cached, so a service restart would very likely land back in the
+     * SAME process with that session still running — precisely the failure the restart exists to
+     * clear. Only process death is a guarantee.
      */
-    suspend fun killEngineProcess(): Boolean = connectionMutex.withLock {
+    suspend fun killEngineProcess(): Boolean = opMutex.withLock { connectionMutex.withLock {
             val binder = engine
             if (binder == null) {
                 // Nothing to kill. Still unbind, in case a binding is outstanding against a process we
@@ -228,7 +249,7 @@ internal class RemoteXrayEngine(
                 killing = false
                 deathSignal = null
             }
-    }
+    } }
 
     private fun requestSuicide(binder: IBinder) {
         runCatching {
@@ -280,6 +301,12 @@ internal class RemoteXrayEngine(
         val requestJson = XrayIpcPayloads.json.encodeToString(IpcRequest.serializer(), request)
         // Binder transactions block, and the far side runs libXray's parser or its whole startup, so
         // this is never a main-thread call.
+        // The transaction itself must not throw out of here. `transact` and `readException` raise
+        // DeadObjectException the moment the engine process is gone — which is precisely the situation
+        // the recovery ladder exists for. Unhandled, that exception unwound all the way out of the
+        // tunnel job and skipped the `keepAliveLoop()` call that follows the ladder, leaving a live tun
+        // with no engine, a Connected status and no watcher at all until some unrelated callback fired.
+        // Returning null is the contract every caller here already handles.
         val responseJson = withContext(Dispatchers.IO) {
             val data = Parcel.obtain()
             val reply = Parcel.obtain()
@@ -288,11 +315,15 @@ internal class RemoteXrayEngine(
                 binder.transact(XrayIpc.TX_INVOKE, data, reply, 0)
                 reply.readException()
                 reply.readString()
+            } catch (error: Exception) {
+                OtcLog.log(LOG_TAG, "${request.method} transaction failed: ${error.javaClass.simpleName}: ${error.message}")
+                engine = null
+                null
             } finally {
                 data.recycle()
                 reply.recycle()
             }
-        }
+        } ?: return null
         return runCatching {
             XrayIpcPayloads.json.decodeFromString(IpcResponse.serializer(), responseJson.orEmpty())
         }.getOrElse {
