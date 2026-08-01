@@ -9,3 +9,12 @@ package com.onthecrow.onthecrowvpn.settings
  * a setting, and changes nothing.
  */
 internal expect val splitTunnelSupported: Boolean
+
+/**
+ * Whether the recovery ladder this setting tunes exists on this platform.
+ *
+ * Only Android runs it (`OnthecrowVpnService`); iOS/macOS hand the tunnel to the Network Extension and
+ * desktop to the sidecar, neither of which reads the preference. Hidden rather than shown-and-inert, for
+ * the same reason as [splitTunnelSupported].
+ */
+internal expect val aggressiveKeepaliveSupported: Boolean

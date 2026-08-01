@@ -12,10 +12,12 @@ import com.onthecrow.onthecrowvpn.connection.RemoveSourceUseCaseImpl
 import com.onthecrow.onthecrowvpn.connection.SelectConfigUseCaseImpl
 import com.onthecrow.onthecrowvpn.connection.VpnSyncWorker
 import com.onthecrow.onthecrowvpn.connection.data.ConfigSourcesRepositoryImpl
+import com.onthecrow.onthecrowvpn.connection.data.RecoveryTuningRepositoryImpl
 import com.onthecrow.onthecrowvpn.connection.data.SplitTunnelRepositoryImpl
 import com.onthecrow.onthecrowvpn.connection.data.VpnConsentRepositoryImpl
 import com.onthecrow.onthecrowvpn.connection.data.datastore.ConfigSourcesPreferencesDataSource
 import com.onthecrow.onthecrowvpn.connection.data.subscription.SubscriptionUrlFetcher
+import com.onthecrow.onthecrowvpn.vpn.domain.RecoveryTuningRepository
 import com.onthecrow.onthecrowvpn.vpn.domain.SplitTunnelRepository
 import com.onthecrow.onthecrowvpn.connection.domain.AddSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.CollapsedGroupsUseCase
@@ -52,6 +54,9 @@ val connectionLogicModule = module {
     single {
         VpnConsentRepositoryImpl(get(named(VPN_SETTINGS_DATA_STORE_QUALIFIER)))
     } bind VpnConsentRepository::class
+    single {
+        RecoveryTuningRepositoryImpl(get(named(VPN_SETTINGS_DATA_STORE_QUALIFIER)))
+    } bind RecoveryTuningRepository::class
     single {
         ConfigSourcesPreferencesDataSource(
             dataStore = get(named(CONNECTION_CONFIG_DATA_STORE_QUALIFIER)),

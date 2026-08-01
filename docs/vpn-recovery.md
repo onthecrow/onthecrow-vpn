@@ -45,7 +45,7 @@ network/Doze trigger ──► recover()
                           ├─ no usable underlying network?  → stand down (a network appearing re-triggers)
                           ├─ device slept > 20s mid-ladder? → abandon (evidence is stale)
                           │
-                          ├─ T0: probe, patiently (up to 45s awake)
+                          ├─ T0: probe, patiently (up to 45s awake)      ← tunable, see below
                           │      timeout grows 600 → 1200 → 2500 → 4000 ms
                           │      first success → healthy
                           │                    → if the path MOVED: rebuild the tun (see below)
@@ -66,6 +66,28 @@ tunnels. The patience is sized to the thing we are actually waiting for: hysteri
 The budget is spent in **awake** time, not wall-clock — measured as `elapsedRealtime − uptimeMillis`.
 The QUIC timer is also `CLOCK_MONOTONIC` and stops during suspend, so budgeting on wall time would burn
 the whole budget on one Doze nap without ever asking the tunnel.
+
+### "Aggressive keepalive" — the opt-in impatient T0
+
+**Settings → Reliability → Aggressive keepalive**, off by default. With it **off, the ladder above is
+exactly what runs** — same 45s patience, same growing timeouts, nothing about the default path changed.
+
+Turned on, T0 goes back to what it was before the `:xray` split: **two 600ms probes, 700ms apart, then
+condemn** (a 1.9s awake budget, sized to admit exactly those two probes and no third). Everything else is
+identical to the default ladder — both guards, the
+Doze INCONCLUSIVE handling, and the rung it escalates into. In particular it escalates into **T2, the
+`:xray` restart**, not the old "kill `:vpn` and let an alarm resurrect it": the tun stays open and the
+VPN icon still does not blink.
+
+The trade is the one the section above describes. It reacts faster when a path is genuinely gone, and
+condemns healthy-but-slow tunnels that patience would have recovered for free — a cold LTE bearer was
+measured at 23s between "cell appeared" and the first probe that could succeed. Useful for debugging or
+on a network where paths die hard; not the right default.
+
+The service collects `RecoveryTuningRepository` for its whole lifetime and each ladder reads the latest
+value, so toggling it applies **live — no reconnect**. It is deliberately kept out of
+`SplitTunnelSettings`, because everything in there is part of `VpnSyncWorker`'s `ConfigKey` and would
+tear the tunnel down on every flip.
 
 ---
 

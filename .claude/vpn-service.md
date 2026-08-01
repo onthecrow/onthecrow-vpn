@@ -61,6 +61,9 @@ open across the restart, so the icon does not blink.
   `revoke`. Writes `AndroidVpnRuntime.status` directly (same process now — no broadcast).
 - `AndroidVpnRuntime.kt` — the `MutableStateFlow<ConnectionStatus>` the whole app observes.
 - `SplitTunnelRoutingStore.kt` — the source of truth for per-app routing, read at establish time.
+- `RecoveryTuningRepository` (`core:vpn:api`) — the "aggressive keepalive" preference; the service
+  collects it into a field and each ladder reads the latest value. No cross-process hop: unlike the
+  routing store, the service and the writer are both in the MAIN process (only `:xray` is separate).
 - `BootRestoreReceiver.kt` — restores the tunnel after reboot / app update from persisted params.
 - `ConnectionParamsStore.kt` — persisted last-good `ConnectionParams` for crash self-heal.
 
@@ -126,7 +129,7 @@ diagnostics) are mandated content; don't trim them. See [`docs/play-release-chec
 ## 5. The recovery ladder
 
 Runs entirely in the app process, `NonCancellable` under `operationMutex`, with a wakelock held.
-Entry: `recover(reason, patienceMs, rebuildTun)` → `runLadder`.
+Entry: `recover(reason, rebuildTun)` → `runLadder(reason, rebuildTun, tuning)`.
 
 ```
 guard: no usable underlying network  → stand down (a network appearing re-triggers)
@@ -158,6 +161,29 @@ Every probe failure ever recorded was a **timeout**, never a socket error. So "n
 broken path from one that has not finished coming up. The first version collapsed that into 1.9s and
 produced a repair loop that fired on healthy tunnels and killed the process ~37×/day. Patience is not a
 guess — it is sized to hysteria2's QUIC idle timeout (see §6).
+
+### The two T0 profiles (`RecoveryTuning`)
+T0 — and **only** T0 — is tunable by the user's "Aggressive keepalive" switch (Settings → Reliability,
+**off by default**). `recover()` calls `currentRecoveryTuning()` once per run and passes the profile into
+`runLadder`, so the setting applies live (no reconnect) and the `mode` reported to analytics is always the
+profile the ladder actually ran under, even if the user flips the switch mid-recovery.
+
+| | patience | probe timeouts | escalates into |
+|---|---|---|---|
+| **PATIENT** (default) | `T0_PATIENCE_MS` = 45s awake | 600 → 1200 → 2500 → 4000 ms | T2 |
+| **AGGRESSIVE** (opt-in) | 1.9s awake ⇒ exactly 2 probes | flat 600 ms | T2 |
+
+`PATIENT` is this file's own constants verbatim, so **with the switch off the ladder is byte-for-byte the
+one documented above** — same patience, same growing timeouts.
+
+`AGGRESSIVE` restores the pre-`:xray`-split T0 (two 600ms probes, 700ms apart, then condemn) and nothing
+else. Both guards (no-network stand-down, 20s sleep-abandon), the INCONCLUSIVE probe handling and every
+rung below T0 are **shared** — each fixes a measured field failure, not a preference, and reverting them
+would reintroduce the overnight 670-futile-dial run and restarts fired on 75-minute-old evidence.
+Crucially it escalates into **T2 (`:xray` restart)**, not the old `:vpn` kill — the tun is never closed
+and the VPN icon never blinks. The trade it makes is the one §"Why T0 owns most of the budget" warns
+about: a cold LTE bearer measured 23s from "cell appeared" to the first probe that could succeed, and
+1.9s condemns it long before that.
 
 ---
 
@@ -416,7 +442,11 @@ Where each fires — do not double-fire or move these:
 - `vpn_recovery` — once per `runLadder` run, fired in `recover()`. `runLadder` and
   `restartEngineForRecovery` now **return `RecoveryOutcome?`** (null = user-disconnect stand-down, not
   reported) purely so `recover()` can report the outcome — no control-flow changed. Trigger is mapped
-  from the reason string (`recoveryTriggerOf`); `transport` is the coarse underlying type only.
+  from the reason string (`recoveryTriggerOf`); `transport` is the coarse underlying type only; `mode`
+  is the `RecoveryMode` the run actually used (resolved once in `recover()` and passed into `runLadder`,
+  so a mid-run toggle cannot make the event disagree with the ladder).
+- `settings_aggressive_keepalive_toggled` — the switch changed (boolean only). Pairs with `mode` above:
+  one says how many opt in, the other whether the impatient ladder actually recovers more often.
 - `vpn_engine_death` — `onEngineDied`, best-effort `ApplicationExitInfo.reason` for `:xray` → enum.
 - `vpn_tun_rebuild` — `rebuildTunForApps` branches (rebuilt-ok / establish-failed / engine-not-back).
 

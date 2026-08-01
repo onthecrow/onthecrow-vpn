@@ -7,6 +7,8 @@ internal data class SettingsState(
     val excludePushServices: Boolean = true,
     val splitTunnelMode: SplitTunnelMode = SplitTunnelMode.OFF,
     val splitTunnelCount: Int = 0,
+    /** Opt-in impatient recovery. Off = the default ladder, unchanged. */
+    val aggressiveKeepalive: Boolean = false,
 ) : State {
 
     /** One line under the split-tunnel row saying what is configured, without opening the screen. */

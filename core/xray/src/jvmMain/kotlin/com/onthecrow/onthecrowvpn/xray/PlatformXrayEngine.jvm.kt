@@ -36,6 +36,12 @@ actual class PlatformXrayEngine : XrayEngine, KoinComponent {
         }
 
         val xrayJson = sanitizer.sanitize(rawXrayJson)
+        // The tun carries the whole device, so an outbound with no encryption would publish every
+        // app's traffic while the first-run disclosure promises the opposite. Refused here, at the
+        // only gate every config passes, rather than at connect time.
+        XrayOutboundEncryption.cleartextReason(xrayJson)?.let { reason ->
+            return@withContext XrayValidationResult.Invalid(reason)
+        }
         XrayValidationResult.Valid(
             xrayJson = xrayJson,
             summary = summarizer.summarize(xrayJson, fallbackTitle = "Xray config"),

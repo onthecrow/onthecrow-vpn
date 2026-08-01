@@ -82,6 +82,13 @@ actual class PlatformXrayEngine : XrayEngine {
             val rawXrayJson = converted.data?.let { json.encodeToString(it) }
                 ?: return@runCatching XrayValidationResult.Invalid("Xray returned empty config")
             val xrayJson = sanitizer.sanitize(rawXrayJson)
+            // The tun carries the whole device, so an outbound with no encryption would publish every
+            // app's traffic while the first-run disclosure promises the opposite. Refused here, at the
+            // only gate every config passes, rather than at connect time.
+            XrayOutboundEncryption.cleartextReason(xrayJson)?.let { reason ->
+                OtcLog.log(LOG_TAG, "validate: REJECTED — unencrypted outbound")
+                return@runCatching XrayValidationResult.Invalid(reason)
+            }
             // testXray only takes a path, so the environment it needs (the geo asset directory) has
             // to be inside the file we hand it.
             val configPath = writeConfigFile(withPlatformEnv(xrayJson, includeTunFd = false))

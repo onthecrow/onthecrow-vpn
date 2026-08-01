@@ -92,10 +92,18 @@ internal fun VpnConsentDialog(
                     )
                     Spacer(Modifier.height(24.dp))
 
+                    // "All traffic" was the wording here, and it is not true out of the box: the
+                    // push-notification bypass ships ON, so Google Play Services goes around the tunnel
+                    // by default. This screen is the Play prominent disclosure and is filmed for the
+                    // Console declaration — an absolute the default configuration falsifies is exactly
+                    // the kind of claim that gets a VPN app rejected, and it also breaks this repo's own
+                    // rule that traffic must never leave the tunnel silently.
                     DisclosureItem(
                         title = "Device-level VPN",
-                        body = "The app creates a system VPN and routes all of your device's network " +
-                            "traffic through an encrypted tunnel.",
+                        body = "The app creates a system VPN and routes your device's network traffic " +
+                            "through an encrypted tunnel. Google Play Services is sent directly, " +
+                            "outside the tunnel, so notifications keep arriving — you can change that, " +
+                            "and choose which apps use the VPN, in Settings.",
                     )
                     DisclosureItem(
                         title = "Your own server",

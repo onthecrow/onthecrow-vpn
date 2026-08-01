@@ -30,7 +30,9 @@ import com.onthecrow.onthecrowvpn.analytics.ConfirmVia
 import com.onthecrow.onthecrowvpn.analytics.ConnectVia
 import com.onthecrow.onthecrowvpn.analytics.EngineDeathReason
 import com.onthecrow.onthecrowvpn.analytics.KeepaliveWindow
+import com.onthecrow.onthecrowvpn.analytics.RecoveryMode
 import com.onthecrow.onthecrowvpn.analytics.RecoveryOutcome
+import com.onthecrow.onthecrowvpn.vpn.domain.RecoveryTuningRepository
 import com.onthecrow.onthecrowvpn.analytics.RecoveryTrigger
 import com.onthecrow.onthecrowvpn.analytics.SessionEndReason
 import com.onthecrow.onthecrowvpn.analytics.Transport
@@ -57,6 +59,9 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -226,6 +231,19 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
     /** Authoritative per-app routing, written by the main process. See [SplitTunnelRoutingStore]. */
     private val routingStore by lazy { SplitTunnelRoutingStore(this, errorReporter) }
 
+    private val recoveryTuningRepository: RecoveryTuningRepository by inject()
+
+    /**
+     * Latest "aggressive keepalive" preference, mirrored here by a collector started in [onCreate].
+     *
+     * Held as a field rather than read inside the ladder: `runLadder` runs `NonCancellable` under
+     * `operationMutex` while a tunnel is down, and a DataStore read there would put storage I/O on the
+     * repair path for a value that changes once in a blue moon. `false` until the first emission, which
+     * is also the default — an unread preference can only ever mean the patient ladder.
+     */
+    @Volatile
+    private var aggressiveKeepalive = false
+
     // A retry is waiting out its backoff. Trigger events consult this to cut the wait short.
     @Volatile
     private var retryPending = false
@@ -243,6 +261,26 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
         AndroidXrayEnvironment.initialize(this)
         AndroidVpnEnvironment.initialize(this)
         DebugLog.setSink { tag, message -> OtcLog.log(tag, message) }
+        // Mirror the recovery-tuning preference for the whole life of the service. Applies live: a
+        // toggle lands here and the next ladder picks it up, with no reconnect (which is exactly why
+        // the setting is kept out of SplitTunnelSettings — see [RecoveryTuningRepository]).
+        //
+        // Guarded end to end: a settings read must never be able to take the tunnel down. If the flow
+        // fails, [aggressiveKeepalive] simply stays at its last value — and its initial value is the
+        // shipped default, so the worst case is the patient ladder, never a surprise aggressive one.
+        //
+        // Every change is logged because this is the ONLY point where the chain
+        // (switch → DataStore → here → ladder) can be observed on a device: pair this line with the
+        // `mode=` field that `recover()` logs at the top of each run.
+        runCatching {
+            recoveryTuningRepository.observe()
+                .onEach {
+                    if (it != aggressiveKeepalive) logd("recovery tuning: aggressiveKeepalive=$it")
+                    aggressiveKeepalive = it
+                }
+                .catch { error -> logd("recovery tuning: observe failed (${error.message}) — keeping $aggressiveKeepalive") }
+                .launchIn(scope)
+        }.onFailure { logd("recovery tuning: unavailable (${it.message}) — patient ladder") }
         logd("onCreate sdk=${Build.VERSION.SDK_INT}")
         logPreviousExitReasons()
     }
@@ -922,7 +960,6 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
      */
     private suspend fun recover(
         reason: String,
-        patienceMs: Long = T0_PATIENCE_MS,
         rebuildTun: Boolean = false,
     ) {
         if (activeXrayJson == null) return
@@ -935,7 +972,8 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
         try {
             withContext(NonCancellable) {
                 operationMutex.withLock {
-                    val outcome = runLadder(reason, patienceMs, rebuildTun)
+                    val tuning = currentRecoveryTuning()
+                    val outcome = runLadder(reason, rebuildTun, tuning)
                     // One event per ladder run (null = stood down for a user disconnect — not reported).
                     // `attempts` reads the restart counter post-run: a confirmed probe resets it to 0, so
                     // a recovered run buckets to "1" and an unrecovered one carries the climbing count.
@@ -946,6 +984,7 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
                             attempts = engineRestartAttempt,
                             durationMs = SystemClock.elapsedRealtime() - started,
                             transport = currentTransport(),
+                            mode = if (tuning.aggressive) RecoveryMode.AGGRESSIVE else RecoveryMode.PATIENT,
                         )
                     }
                 }
@@ -956,7 +995,14 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
         }
     }
 
-    private suspend fun runLadder(reason: String, patienceMs: Long, rebuildTun: Boolean = false): RecoveryOutcome? {
+    private suspend fun runLadder(
+        reason: String,
+        rebuildTun: Boolean = false,
+        // Resolved once by the caller and passed in, so the profile the ladder RAN under is the one the
+        // analytics event reports — re-reading the store afterwards could straddle a toggle mid-run.
+        tuning: RecoveryTuning,
+    ): RecoveryOutcome? {
+        val patienceMs = tuning.t0PatienceMs
         val startedWall = SystemClock.elapsedRealtime()
         // uptimeMillis stops during CPU suspend; elapsedRealtime does not. The difference between them
         // IS the time this device spent asleep, measured rather than guessed.
@@ -970,8 +1016,8 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
             // nothing, since the whole point of the number was to tell "xray never dialled" apart from
             // "xray dialled and got nowhere". The engine's own `protectFd #N` lines are in the same log
             // file with timestamps, which answers the same question honestly.
-            "recover($reason): START screenOn=$screenOn " +
-                "batteryOptIgnored=${isIgnoringBatteryOptimizations()}",
+            "recover($reason): START screenOn=$screenOn mode=${if (tuning.aggressive) "aggressive" else "patient"} " +
+                "t0Patience=${patienceMs}ms batteryOptIgnored=${isIgnoringBatteryOptimizations()}",
         )
 
         // T0 — ask the tunnel itself, patiently.
@@ -1016,7 +1062,8 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
                 logd("recover($reason): abandoning — device slept ${sleptMs()}ms mid-ladder")
                 return RecoveryOutcome.ABANDONED_SLEPT
             }
-            val timeout = PROBE_TIMEOUT_STEPS_MS[attempt.coerceAtMost(PROBE_TIMEOUT_STEPS_MS.lastIndex)]
+            val steps = tuning.t0ProbeTimeoutsMs
+            val timeout = steps[attempt.coerceAtMost(steps.lastIndex)]
             if (probeTunnel(timeout) == true) {
                 logd("recover($reason): T0 OK — alive after ${elapsed()}ms (attempt ${attempt + 1})")
                 onRecoverySucceeded()
@@ -1077,6 +1124,27 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
         logd("recover($reason): T0 dead (${elapsed()}ms) → T2 engine restart")
         return restartEngineForRecovery(reason)
     }
+
+    /**
+     * How impatient this ladder run is allowed to be. Only T0 — the "ask the tunnel whether it is still
+     * alive" rung — is affected; every rung below it, and every safety rail (sleep-abandon, the
+     * no-usable-network stand-down, INCONCLUSIVE probes in Doze), is shared by both modes because each
+     * of them fixes a measured field failure, not a preference.
+     */
+    private class RecoveryTuning(
+        val t0PatienceMs: Long,
+        val t0ProbeTimeoutsMs: IntArray,
+        val aggressive: Boolean,
+    )
+
+    /**
+     * Turn the current preference into a profile.
+     *
+     * [PATIENT_TUNING] uses this file's own constants verbatim, so with the toggle off the ladder is the
+     * one that shipped — same patience, same growing probe timeouts, same everything.
+     */
+    private fun currentRecoveryTuning(): RecoveryTuning =
+        if (aggressiveKeepalive) AGGRESSIVE_TUNING else PATIENT_TUNING
 
     /**
      * T2: replace the engine process, then start it again on the existing tun.
@@ -2259,6 +2327,44 @@ class OnthecrowVpnService : VpnService(), KoinComponent {
         // probe failure ever logged was a timeout, never an error, so a short deadline does not detect
         // breakage faster — it only manufactures it.
         private val PROBE_TIMEOUT_STEPS_MS = intArrayOf(600, 1_200, 2_500, 4_000)
+
+        // The default ladder: this file's own numbers, so "toggle off" is the behaviour that shipped.
+        private val PATIENT_TUNING = RecoveryTuning(
+            t0PatienceMs = T0_PATIENCE_MS,
+            t0ProbeTimeoutsMs = PROBE_TIMEOUT_STEPS_MS,
+            aggressive = false,
+        )
+
+        // "Aggressive keepalive" (opt-in): T0 as it was before the `:xray` split — two 600ms probes,
+        // 700ms apart, then condemn. It buys a faster reaction on a path that is genuinely gone, and
+        // pays for it on one that is merely slow to come up: a cold LTE bearer measured 23s between
+        // "cell appeared" and the first probe that could succeed, and this budget condemns it long
+        // before that. What it escalates INTO is the current mechanism, not the old one — `:xray` is
+        // restarted on the tun we already hold, so the tun is never closed and the VPN icon never blinks.
+        //
+        // TWO probes, not one, is the load-bearing part: the old ladder probed more than once precisely
+        // so that a single blip on a lossy link could not buy a repair. The budget is a TIME window here
+        // rather than the old `repeat(2)`, so it has to be sized to admit the second probe with margin:
+        //   after probe 1 + gap  = 600 + 700  = 1300ms  → must be INSIDE  the window
+        //   after probe 2 + gap  = 1900 + 700 = 2600ms  → must be OUTSIDE the window
+        // i.e. anything in (1300, 2600]. 1900 sits mid-band — it leaves 600ms of headroom for a probe
+        // that runs long (probeTunnel can add up to PROBE_ESTABLISH_GRACE_MS when a ladder starts right
+        // after establish, which at 1400 would have silently dropped it to a ONE-probe condemn) while
+        // keeping a third probe 700ms out of reach for a probe that spends its timeout. It is also
+        // exactly the old 600+700+600 total.
+        //
+        // Probes that fail FAST rather than time out (an INCONCLUSIVE return, which measured nothing)
+        // do fit a third attempt into the same window. That is the harmless direction: the budget is a
+        // floor on how long a quiet tunnel gets, never a cap on how many chances it gets, and every
+        // failure ever logged in the field was a timeout anyway.
+        private const val AGGRESSIVE_T0_PATIENCE_MS = 1_900L
+        private val AGGRESSIVE_PROBE_TIMEOUT_STEPS_MS = intArrayOf(600)
+        private val AGGRESSIVE_TUNING = RecoveryTuning(
+            t0PatienceMs = AGGRESSIVE_T0_PATIENCE_MS,
+            t0ProbeTimeoutsMs = AGGRESSIVE_PROBE_TIMEOUT_STEPS_MS,
+            aggressive = true,
+        )
+
         private const val PROBE_DNS_TXID = 0x0C0D
         private const val PROBE_DNS_SERVER = "1.1.1.1"
         private const val PROBE_DNS_NAME = "cloudflare.com"

@@ -3,6 +3,7 @@ package com.onthecrow.onthecrowvpn.settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,14 +15,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,10 +73,13 @@ internal fun SettingsScreen(
                 )
             }
 
-            SectionLabel("Notifications")
+            // No section headers: with this few rows they label the obvious and cost more vertical
+            // space than they earn. Rows are separated by [RowSpacing] alone.
             SwitchRow(
                 title = "Allow notifications under VPN",
-                subtitle = "Route Google Play Services directly so push (FCM) still arrives, even in Doze.",
+                // Says the quiet part: this traffic leaves the tunnel. The old copy sold only the
+                // benefit ("push still arrives") and never told the user what it costs.
+                subtitle = "Send Google Play Services outside the VPN so notifications keep arriving.",
                 checked = state.excludePushServices,
                 onCheckedChange = { onEvent(SettingsEvent.OnExcludePushChanged(it)) },
             )
@@ -74,8 +87,7 @@ internal fun SettingsScreen(
             // Hidden rather than disabled where per-app routing doesn't exist: an entry that opens an
             // empty list with a working mode selector would let the user "configure" something inert.
             if (splitTunnelSupported) {
-                Spacer(Modifier.size(20.dp))
-                SectionLabel("Split tunneling")
+                Spacer(Modifier.size(RowSpacing))
                 NavigationRow(
                     title = "Per-app routing",
                     subtitle = state.splitTunnelSummary,
@@ -83,9 +95,28 @@ internal fun SettingsScreen(
                 )
             }
 
+            // Hidden where nothing reads it (iOS/desktop don't run this recovery ladder), for the same
+            // reason as the split-tunnel entry above.
+            if (aggressiveKeepaliveSupported) {
+                Spacer(Modifier.size(RowSpacing))
+                var showAggressiveKeepaliveInfo by rememberSaveable { mutableStateOf(false) }
+                SwitchRow(
+                    title = "Aggressive keepalive",
+                    subtitle = "Restores the connection faster, but may reconnect more often than needed.",
+                    checked = state.aggressiveKeepalive,
+                    onCheckedChange = { onEvent(SettingsEvent.OnAggressiveKeepaliveChanged(it)) },
+                    onInfoClick = { showAggressiveKeepaliveInfo = true },
+                )
+                if (showAggressiveKeepaliveInfo) {
+                    AggressiveKeepaliveInfoDialog(onDismiss = { showAggressiveKeepaliveInfo = false })
+                }
+            }
+
             val openUrl = rememberUrlOpener()
             if (openUrl != null) {
-                Spacer(Modifier.size(20.dp))
+                // A wider gap than between the rows above: this is a document, not a setting, and the
+                // extra space is what says so now that the section headers are gone.
+                Spacer(Modifier.size(GroupSpacing))
                 NavigationRow(
                     title = "Privacy policy",
                     subtitle = "What the app stores, and what it never sends",
@@ -186,40 +217,55 @@ private fun NavigationRow(
     }
 }
 
-/**
- * A Material 3 list subheader.
- *
- * `titleSmall` is the role M3 gives section headers in a list: 14sp at Medium weight, so it reads as
- * a heading against 14sp Normal body copy without competing with the 16sp row titles. Sentence case,
- * not caps — small all-caps is a Material 2 habit and hurts legibility at this size.
- *
- * Coloured `onBackground` because that is the surface it sits on (the rows have their own container
- * colour). M3's own subheader spec reaches for `onSurfaceVariant`, but that is the muted role used
- * for supporting text, and it made these read as dimmer than the content they introduce.
- */
-@Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 8.dp),
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.onBackground,
-    )
-}
-
 @Composable
 private fun SwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    // When non-null, an info affordance follows the title. For a setting whose trade-off does not fit a
+    // one-line subtitle: the row stays short and the detail lives one tap away, rather than a paragraph
+    // nobody reads sitting under every switch.
+    onInfoClick: (() -> Unit)? = null,
 ) {
     RowContainer(onClick = { onCheckedChange(!checked) }) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-            )
+            if (onInfoClick == null) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.size(INFO_ICON_GAP))
+                    // The touch target is 48dp, but it must not push the row around: `size` is what the
+                    // Row measures (the glyph), `wrapContentSize(unbounded)` lets the child exceed that
+                    // constraint, and `requiredSize` then forces the real 48dp for the ripple and the
+                    // hit area. Sizing the Box at 48dp directly made the title line 48dp tall, which
+                    // added ~12dp above the title and below it — this row has to keep the exact vertical
+                    // rhythm of every other settings row.
+                    Box(
+                        modifier = Modifier
+                            .size(INFO_ICON_SIZE)
+                            .wrapContentSize(align = Alignment.Center, unbounded = true)
+                            .requiredSize(INFO_TOUCH_TARGET)
+                            .clip(CircleShape)
+                            .clickable(onClick = onInfoClick),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = SettingsSymbols.Info,
+                            contentDescription = "About $title",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(INFO_ICON_SIZE),
+                        )
+                    }
+                }
+            }
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodyMedium,
@@ -227,5 +273,79 @@ private fun SwitchRow(
             )
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/** Between adjacent setting rows. */
+private val RowSpacing = 20.dp
+
+/** Between the settings and the trailing document link — a wider beat that stands in for a divider. */
+private val GroupSpacing = 64.dp
+
+private val INFO_ICON_GAP = 8.dp
+private val INFO_ICON_SIZE = 20.dp
+private val INFO_TOUCH_TARGET = 48.dp
+
+/**
+ * The long-form explanation behind the "Aggressive keepalive" info icon.
+ *
+ * Written for someone with no idea what a tunnel, a probe or a network handover is: it says what the
+ * app does by default, what changes, and — the part that decides it for them — what they gain and what
+ * it costs, in that order. No durations, no thresholds; the numbers belong in the log, not in a dialog
+ * that has to survive a translation and a year of tuning.
+ */
+@Composable
+private fun AggressiveKeepaliveInfoDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Got it") }
+        },
+        title = { Text("Aggressive keepalive") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Connections hiccup all the time — when you walk out of Wi-Fi range, " +
+                        "switch to mobile data, or your signal dips. Most of these fix themselves in " +
+                        "a moment, so the app waits a little before rebuilding the connection.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "Turn this on and the app stops waiting: at the first sign of trouble it " +
+                        "rebuilds the connection right away.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                InfoDialogPoint(
+                    label = "What you gain",
+                    body = "When your connection really has dropped, the VPN comes back sooner " +
+                        "instead of leaving you waiting.",
+                )
+                InfoDialogPoint(
+                    label = "What it costs",
+                    body = "On a weak or busy network the app will sometimes rebuild a connection " +
+                        "that would have recovered on its own. Each rebuild briefly interrupts " +
+                        "whatever you are doing and uses a little more battery.",
+                )
+                Text(
+                    text = "If your connection is usually fine, leave this off.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun InfoDialogPoint(label: String, body: String) {
+    Column {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Text(
+            text = body,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

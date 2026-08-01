@@ -23,6 +23,7 @@ object NoOpAnalyticsManager : AnalyticsManager {
         attempts: Int,
         durationMs: Long,
         transport: Transport?,
+        mode: RecoveryMode,
     ) = Unit
     override fun vpnEngineDeath(reason: EngineDeathReason) = Unit
     override fun vpnTunnelConfirmed(firstProbeMs: Long, via: ConfirmVia) = Unit
@@ -36,6 +37,7 @@ object NoOpAnalyticsManager : AnalyticsManager {
     override fun splitTunnelApplied(mode: SplitTunnelMode, appCount: Int) = Unit
     override fun splitTunnelOpened() = Unit
     override fun settingsPushBypassToggled(enabled: Boolean) = Unit
+    override fun settingsAggressiveKeepaliveToggled(enabled: Boolean) = Unit
     override fun diagnosticsLogShared() = Unit
     override fun settingsOpened() = Unit
     override fun qsTileAction(action: QsTileAction, blockedReason: QsBlockedReason) = Unit

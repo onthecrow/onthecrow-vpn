@@ -86,6 +86,15 @@ enum class RecoveryOutcome {
     UNRECOVERED_BACKOFF,
 }
 
+/**
+ * Which recovery profile the ladder ran under — the user-facing "aggressive keepalive" switch.
+ * [PATIENT] is the default. Reported per run so the two can be compared on outcome, not on opinion.
+ */
+enum class RecoveryMode {
+    PATIENT,
+    AGGRESSIVE,
+}
+
 /** Coarse underlying-transport type — the ONLY safe network detail (never netId/IP/interface/SSID). */
 enum class Transport { WIFI, CELLULAR, ETHERNET, VPN, UNKNOWN }
 

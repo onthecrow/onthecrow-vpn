@@ -30,13 +30,14 @@
 <body>
 
 <h1>Privacy Policy</h1>
-<p class="updated">OnthecrowVPN · Last updated: 22 July 2026</p>
+<p class="updated">OnthecrowVPN · Last updated: 2 August 2026</p>
 
 <p class="lede">
-  OnthecrowVPN has no accounts and shows no advertising, and your traffic and configurations never
-  leave your device except to the VPN server you choose. It does include Firebase for crash reporting
-  and a small amount of usage analytics, described below. This page explains what the app does with
-  information.
+  OnthecrowVPN has no accounts and shows no advertising. Your configurations never leave your device,
+  and your traffic goes to the VPN server you choose &mdash; with one default exception: Google Play
+  Services is sent directly, outside the tunnel, so notifications keep arriving. You can change that in
+  Settings. The app also includes Firebase for crash reporting and usage analytics, described below.
+  This page explains what the app does with information.
 </p>
 
 <h2>What the app is</h2>
@@ -71,9 +72,12 @@
     metadata any HTTPS request carries, such as your IP address. It does not carry your identity, your
     traffic, or any browsing information.</li>
   <li><strong>To Firebase (Google):</strong> the app includes the Firebase SDK for crash reporting
-    (see below) and basic usage analytics — for example that the app was opened. This is diagnostic
-    and aggregate; it does not include your configurations, your traffic, your browsing, or the
-    contents of your diagnostic log. Firebase Analytics may use an advertising identifier; the app
+    (see below) and usage analytics: which screens and settings you use, whether a configuration was
+    added and by which method (never its contents), whether a connection attempt succeeded or failed,
+    roughly how long a session lasted, and coarse counts such as how many configurations you have.
+    Every value is a fixed category or a range, never an exact number or a free-form string. It does
+    not include your configurations, your traffic, your browsing, the address of any server, any
+    credential, or the contents of your diagnostic log. Firebase Analytics may use an advertising identifier; the app
     shows no advertising and does not use it to advertise to you. See
     <a href="https://firebase.google.com/support/privacy" rel="noopener">Firebase's privacy
     documentation</a> for how Google handles this data.</li>
@@ -95,9 +99,12 @@
 
 <h2>Crash reporting</h2>
 <p>
-  Builds distributed through app stores may include Firebase Crashlytics. If present, it sends a crash
-  report when the app crashes: the stack trace, the device model, and the OS version. It does not send
-  your configurations, your traffic, or your diagnostic log. See
+  Builds distributed through app stores include Firebase Crashlytics. It sends a report when the app
+  crashes, and also when the app catches an unexpected internal error and keeps running. A report
+  contains the error type, a stack trace, a broad category label such as &ldquo;vpn_tunnel&rdquo;, the
+  device model, and the OS version. The error&rsquo;s own message is deliberately removed before
+  sending, because such a message can quote a server address or a credential. It does not send your
+  configurations, your traffic, or your diagnostic log. See
   <a href="https://firebase.google.com/support/privacy" rel="noopener">Firebase's privacy documentation</a>
   for how Google handles that data.
 </p>
@@ -108,15 +115,15 @@
     consent the first time.</li>
   <li><strong>Notifications</strong> — Android requires a VPN to show an ongoing notification while it
     is running.</li>
-  <li><strong>Ignore battery optimisations</strong> — optional, and only so the tunnel can be restored
-    reliably while the device is idle.</li>
   <li><strong>Query installed apps</strong> — to show you a list of apps in the split-tunnelling screen.
     The list is read on your device and never sent anywhere.</li>
 </ul>
 
 <h2>Children</h2>
 <p>
-  The app is not directed at children and collects no information from anyone, including children.
+  The app is not directed at children. It has no accounts and collects no personal information from
+  any user; the diagnostic and analytics data described above is collected from everyone who uses the
+  app, children included.
 </p>
 
 <h2>Changes</h2>

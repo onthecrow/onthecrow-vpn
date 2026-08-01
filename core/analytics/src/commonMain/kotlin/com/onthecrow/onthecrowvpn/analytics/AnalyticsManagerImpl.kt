@@ -10,6 +10,7 @@ import com.onthecrow.onthecrowvpn.analytics.events.DiagnosticsLogSharedEvent
 import com.onthecrow.onthecrowvpn.analytics.events.DisconnectTappedEvent
 import com.onthecrow.onthecrowvpn.analytics.events.QsTileActionEvent
 import com.onthecrow.onthecrowvpn.analytics.events.SettingsOpenedEvent
+import com.onthecrow.onthecrowvpn.analytics.events.SettingsAggressiveKeepaliveToggledEvent
 import com.onthecrow.onthecrowvpn.analytics.events.SettingsPushBypassToggledEvent
 import com.onthecrow.onthecrowvpn.analytics.events.SourceAddFailedEvent
 import com.onthecrow.onthecrowvpn.analytics.events.SourceAddedEvent
@@ -81,7 +82,8 @@ internal class AnalyticsManagerImpl(
         attempts: Int,
         durationMs: Long,
         transport: Transport?,
-    ) = track(VpnRecoveryEvent(trigger, outcome, attempts, durationMs, transport))
+        mode: RecoveryMode,
+    ) = track(VpnRecoveryEvent(trigger, outcome, attempts, durationMs, transport, mode))
 
     override fun vpnEngineDeath(reason: EngineDeathReason) = track(VpnEngineDeathEvent(reason))
 
@@ -115,6 +117,9 @@ internal class AnalyticsManagerImpl(
 
     override fun settingsPushBypassToggled(enabled: Boolean) =
         track(SettingsPushBypassToggledEvent(enabled))
+
+    override fun settingsAggressiveKeepaliveToggled(enabled: Boolean) =
+        track(SettingsAggressiveKeepaliveToggledEvent(enabled))
 
     override fun diagnosticsLogShared() = track(DiagnosticsLogSharedEvent())
 

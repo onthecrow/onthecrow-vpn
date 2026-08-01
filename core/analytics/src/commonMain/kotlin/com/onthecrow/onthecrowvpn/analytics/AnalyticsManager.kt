@@ -116,6 +116,7 @@ interface AnalyticsManager {
      * @param attempts engine-restart attempts so far (bucketed on-device).
      * @param durationMs elapsed ladder time (bucketed on-device).
      * @param transport optional coarse underlying-transport type — the only permitted network detail.
+     * @param mode which recovery profile ran (the "aggressive keepalive" switch).
      */
     fun vpnRecovery(
         trigger: RecoveryTrigger,
@@ -123,6 +124,7 @@ interface AnalyticsManager {
         attempts: Int,
         durationMs: Long,
         transport: Transport?,
+        mode: RecoveryMode,
     )
 
     /**
@@ -206,6 +208,15 @@ interface AnalyticsManager {
      * @param enabled the new switch state.
      */
     fun settingsPushBypassToggled(enabled: Boolean)
+
+    /**
+     * `settings_aggressive_keepalive_toggled` — the "aggressive keepalive" switch changed.
+     *
+     * Pairs with [RecoveryMode] on [vpnRecovery]: this says how many users opt in, that says whether the
+     * impatient ladder actually recovers more often than the default one.
+     * @param enabled the new switch state.
+     */
+    fun settingsAggressiveKeepaliveToggled(enabled: Boolean)
 
     /** `diagnostics_log_shared` — the diagnostic-log share sheet was opened. */
     fun diagnosticsLogShared()
