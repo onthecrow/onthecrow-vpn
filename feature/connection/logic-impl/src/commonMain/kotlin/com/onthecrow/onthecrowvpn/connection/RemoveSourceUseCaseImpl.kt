@@ -1,5 +1,6 @@
 package com.onthecrow.onthecrowvpn.connection
 
+import com.onthecrow.onthecrowvpn.analytics.AnalyticsManager
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigSourcesRepository
 import com.onthecrow.onthecrowvpn.connection.domain.RemoveSourceUseCase
 import com.onthecrow.onthecrowvpn.vpn.ConnectionStatus
@@ -16,10 +17,16 @@ import kotlinx.coroutines.withTimeoutOrNull
 internal class RemoveSourceUseCaseImpl(
     private val repository: ConfigSourcesRepository,
     private val vpnController: VpnController,
+    private val analyticsManager: AnalyticsManager,
 ) : RemoveSourceUseCase {
     override suspend fun invoke(sourceId: String) {
         val selection = repository.observeSelection().first()
-        if (selection?.sourceId == sourceId) {
+        val wasActive = selection?.sourceId == sourceId
+        // Read the source kind before removal (a category — never its bundleId/url/title).
+        repository.observeSources().first().firstOrNull { it.id == sourceId }?.let { source ->
+            analyticsManager.sourceDeleted(source.analyticsKind(), wasActive)
+        }
+        if (wasActive) {
             val status = vpnController.status.value
             if (status is ConnectionStatus.Connected || status is ConnectionStatus.Connecting) {
                 vpnController.disconnect()

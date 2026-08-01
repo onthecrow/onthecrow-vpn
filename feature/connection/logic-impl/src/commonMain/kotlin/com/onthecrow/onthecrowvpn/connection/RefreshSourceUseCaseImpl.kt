@@ -1,5 +1,7 @@
 package com.onthecrow.onthecrowvpn.connection
 
+import com.onthecrow.onthecrowvpn.analytics.AnalyticsManager
+import com.onthecrow.onthecrowvpn.analytics.SourceKind
 import com.onthecrow.onthecrowvpn.connection.data.subscription.SubscriptionUrlFetcher
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigSourcesRepository
 import com.onthecrow.onthecrowvpn.connection.domain.RefreshResult
@@ -19,6 +21,7 @@ internal class RefreshSourceUseCaseImpl(
     private val repository: ConfigSourcesRepository,
     private val orchestrator: ConfigSourcesOrchestrator,
     private val fetcher: SubscriptionUrlFetcher,
+    private val analyticsManager: AnalyticsManager,
 ) : RefreshSourceUseCase {
     override suspend fun invoke(sourceId: String): RefreshResult {
         val source = repository.observeSources().first().firstOrNull { it.id == sourceId }
@@ -26,10 +29,14 @@ internal class RefreshSourceUseCaseImpl(
         return when (source) {
             is ConfigSource.FirestoreSubscription -> {
                 orchestrator.refreshFirestoreSource(sourceId)
+                analyticsManager.sourceRefreshed(SourceKind.SUBSCRIPTION_ID, failureReason = null)
                 RefreshResult.Ok
             }
             is ConfigSource.SubscriptionUrl -> when (val fetched = fetcher.fetch(source.url)) {
-                is SubscriptionUrlFetcher.FetchResult.Failure -> RefreshResult.Failed(fetched.message)
+                is SubscriptionUrlFetcher.FetchResult.Failure -> {
+                    analyticsManager.sourceRefreshed(SourceKind.SUBSCRIPTION_URL, fetched.reason.toRefreshReason())
+                    RefreshResult.Failed(fetched.message)
+                }
                 is SubscriptionUrlFetcher.FetchResult.Success -> {
                     repository.updateSource(sourceId) { src ->
                         if (src is ConfigSource.SubscriptionUrl) {
@@ -42,10 +49,11 @@ internal class RefreshSourceUseCaseImpl(
                             src
                         }
                     }
+                    analyticsManager.sourceRefreshed(SourceKind.SUBSCRIPTION_URL, failureReason = null)
                     RefreshResult.Ok
                 }
             }
-            is ConfigSource.XrayLink -> RefreshResult.Ok // nothing to refresh
+            is ConfigSource.XrayLink -> RefreshResult.Ok // nothing to refresh (no event)
         }
     }
 

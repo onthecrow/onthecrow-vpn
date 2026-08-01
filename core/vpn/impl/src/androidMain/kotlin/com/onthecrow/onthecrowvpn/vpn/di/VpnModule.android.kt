@@ -10,5 +10,5 @@ import org.koin.dsl.module
 actual val vpnPlatformModule: Module = module {
     // Keep AndroidSplitTunnelState in sync with persisted settings from app start.
     single(createdAtStart = true) { SplitTunnelAndroidSync(get(), get()) }
-    single { AndroidInstalledAppsProvider() } bind InstalledAppsProvider::class
+    single { AndroidInstalledAppsProvider(get()) } bind InstalledAppsProvider::class
 }

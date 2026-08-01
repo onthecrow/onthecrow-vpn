@@ -240,6 +240,7 @@ internal class ConnectionViewModelTest {
         vpnController = vpnController,
         vpnPermissionRequester = FakeVpnPermissionRequester(),
         vpnConsentRepository = consentRepository,
+        analyticsManager = com.onthecrow.onthecrowvpn.analytics.NoOpAnalyticsManager,
         navigator = FakeNavigator(),
         reducer = ConnectionReducer(),
     )

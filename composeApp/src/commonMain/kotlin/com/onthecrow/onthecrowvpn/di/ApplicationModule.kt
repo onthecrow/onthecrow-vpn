@@ -1,5 +1,7 @@
 package com.onthecrow.onthecrowvpn.di
 
+import com.onthecrow.onthecrowvpn.analytics.di.analyticsModule
+import com.onthecrow.onthecrowvpn.errorreporting.di.errorReportingModule
 import com.onthecrow.onthecrowvpn.connection.ConnectionDestination
 import com.onthecrow.onthecrowvpn.connection.di.connectionLogicModule
 import com.onthecrow.onthecrowvpn.connection.di.connectionModule
@@ -20,6 +22,8 @@ val applicationModule = module {
     single { Json { ignoreUnknownKeys = true } }
     single(StartDestination) { ConnectionDestination } bind Destination::class
     includes(
+        analyticsModule,
+        errorReportingModule,
         coroutinesModule,
         datastoreModule,
         firebaseModule,

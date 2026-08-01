@@ -1,6 +1,7 @@
 package com.onthecrow.onthecrowvpn.settings
 
 import androidx.lifecycle.viewModelScope
+import com.onthecrow.onthecrowvpn.analytics.AnalyticsManager
 import com.onthecrow.onthecrowvpn.navigation.Navigator
 import com.onthecrow.onthecrowvpn.uicore.BaseViewModel
 import com.onthecrow.onthecrowvpn.vpn.domain.InstalledAppsProvider
@@ -12,6 +13,7 @@ import kotlinx.coroutines.launch
 internal class SplitTunnelViewModel(
     private val splitTunnelRepository: SplitTunnelRepository,
     private val installedAppsProvider: InstalledAppsProvider,
+    private val analyticsManager: AnalyticsManager,
     private val navigator: Navigator,
     reducer: SplitTunnelReducer,
 ) : BaseViewModel<SplitTunnelEvent, SplitTunnelState, SplitTunnelReducer>(reducer) {
@@ -43,6 +45,8 @@ internal class SplitTunnelViewModel(
      */
     private fun apply() {
         val draft = state.value
+        // Mode + a coarse app-count bucket only — never the package set (which reveals installed apps).
+        analyticsManager.splitTunnelApplied(draft.mode.toAnalytics(), draft.selectedPackages.size)
         viewModelScope.launch {
             splitTunnelRepository.update {
                 it.copy(mode = draft.mode, selectedPackages = draft.selectedPackages)

@@ -14,6 +14,9 @@ internal class SettingsReducer : Reducer<SettingsState, SettingsEvent> {
         )
         // Optimistic — the toggle reflects immediately; persistence + reload confirm it.
         is SettingsEvent.OnExcludePushChanged -> state.copy(excludePushServices = event.enabled)
-        SettingsEvent.OnSplitTunnelClick, SettingsEvent.OnBackClick -> state
+        SettingsEvent.OnSplitTunnelClick,
+        SettingsEvent.OnLogShared,
+        SettingsEvent.OnBackClick,
+        -> state
     }
 }

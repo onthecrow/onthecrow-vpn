@@ -25,7 +25,23 @@ import android.os.PowerManager
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.onthecrow.onthecrowvpn.analytics.AnalyticsManager
+import com.onthecrow.onthecrowvpn.analytics.ConfirmVia
+import com.onthecrow.onthecrowvpn.analytics.ConnectVia
+import com.onthecrow.onthecrowvpn.analytics.EngineDeathReason
+import com.onthecrow.onthecrowvpn.analytics.KeepaliveWindow
+import com.onthecrow.onthecrowvpn.analytics.RecoveryOutcome
+import com.onthecrow.onthecrowvpn.analytics.RecoveryTrigger
+import com.onthecrow.onthecrowvpn.analytics.SessionEndReason
+import com.onthecrow.onthecrowvpn.analytics.Transport
+import com.onthecrow.onthecrowvpn.analytics.TunRebuildOutcome
+import com.onthecrow.onthecrowvpn.analytics.VpnErrorCategory
+import com.onthecrow.onthecrowvpn.analytics.VpnPermissionOutcome
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.vpn.log.DebugLog
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import com.onthecrow.onthecrowvpn.xray.AndroidVpnSocketProtector
 import com.onthecrow.onthecrowvpn.xray.AndroidXrayEnvironment
 import com.onthecrow.onthecrowvpn.xray.OtcLog
@@ -51,12 +67,33 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 
-class OnthecrowVpnService : VpnService() {
+class OnthecrowVpnService : VpnService(), KoinComponent {
+    // Fire-and-forget analytics. Main-process only (Firebase is not initialised in `:xray`), which this
+    // service always is. Carries outcomes/enums/buckets only — never a server, credential, or config.
+    private val analyticsManager: AnalyticsManager by inject()
+    // Caught non-fatals → Crashlytics (message scrubbed). Main process only. See ErrorReporter.
+    private val errorReporter: ErrorReporter by inject()
+
+    // ---- Per-session analytics state (reset on each fresh connect in [runConnect]) ----
+    /** elapsedRealtime when the current session reached Connected; null when no session is up. */
+    @Volatile
+    private var connectedAt: Long? = null
+    /** How the current session was brought up, for `vpn_connected`. */
+    @Volatile
+    private var pendingConnectVia: ConnectVia = ConnectVia.FRESH
+    /** Confirmed-DEAD keepalive probes this session (for `vpn_keepalive_health`). */
+    private var keepaliveDeadCount = 0
+    /** INCONCLUSIVE (Doze-frozen) keepalive probes this session — reported apart from dead ones. */
+    private var keepaliveInconclusiveCount = 0
+    /** Gate so `vpn_tunnel_confirmed` fires once per session, not on every confirmed probe. */
+    private val tunnelConfirmedThisSession = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // CoroutineExceptionHandler catches anything that escapes the runCatching guards (so a thrown
     // recovery/keepalive coroutine is logged with its stack instead of vanishing into Logcat in Doze).
     private val scope = CoroutineScope(
         SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { ctx, error ->
             logd("UNCAUGHT coroutine error in $ctx: ${error.stackTraceToString()}")
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, error)
         },
     )
     // The engine runs in `:xray`, not here. `protect` is passed across so that process can exclude its
@@ -184,10 +221,10 @@ class OnthecrowVpnService : VpnService() {
     private var tunnelJob: Job? = null
 
     // Persisted connect params so the service can self-reconnect after a crash / system kill.
-    private val paramsStore by lazy { ConnectionParamsStore(this) }
+    private val paramsStore by lazy { ConnectionParamsStore(this, errorReporter) }
 
     /** Authoritative per-app routing, written by the main process. See [SplitTunnelRoutingStore]. */
-    private val routingStore by lazy { SplitTunnelRoutingStore(this) }
+    private val routingStore by lazy { SplitTunnelRoutingStore(this, errorReporter) }
 
     // A retry is waiting out its backoff. Trigger events consult this to cut the wait short.
     @Volatile
@@ -229,6 +266,9 @@ class OnthecrowVpnService : VpnService() {
                 activeAllow = intent.getStringArrayListExtra(EXTRA_ALLOW)
                     ?: restored?.allow ?: emptyList()
                 if (restored != null) logd("connect: restored persisted params")
+                // fromIntent present = a user-driven connect; a blank payload that fell back to persisted
+                // params = a restore (boot / sticky self-heal delivered as CONNECT).
+                pendingConnectVia = if (restored != null) ConnectVia.RESTORE else ConnectVia.FRESH
                 // Persist for crash self-heal (cleared on deliberate teardown / fatal failure).
                 if (!xrayJson.isNullOrBlank()) {
                     paramsStore.save(ConnectionParams(xrayJson, activeDisallow, activeAllow))
@@ -241,12 +281,12 @@ class OnthecrowVpnService : VpnService() {
             // long. The ladder polls this flag and stands down.
             ACTION_DISCONNECT -> {
                 disconnecting = true
-                scope.launch { runUserDisconnect() }
+                scope.launch { runUserDisconnect(SessionEndReason.USER) }
             }
             // Remote revocation: same teardown as disconnect (Android has no persisted system profile).
             ACTION_REVOKE -> {
                 disconnecting = true
-                scope.launch { runUserDisconnect() }
+                scope.launch { runUserDisconnect(SessionEndReason.EXTERNAL_REVOKE) }
             }
             // intent == null (and so action == null): START_STICKY recreated us. That signal is now
             // unambiguous — it means an UNPLANNED death, because nothing kills this process on purpose
@@ -258,6 +298,7 @@ class OnthecrowVpnService : VpnService() {
                     logd("sticky restart — restoring tunnel from persisted config")
                     activeDisallow = saved.disallow
                     activeAllow = saved.allow
+                    pendingConnectVia = ConnectVia.RESTORE
                     scope.launch { runConnect(saved.xrayJson) }
                 } else {
                     logd("sticky restart — no persisted config; standing down")
@@ -283,7 +324,7 @@ class OnthecrowVpnService : VpnService() {
         // plus a backoff that reaches five minutes, killing and respawning the engine the whole time,
         // which is what happens when another VPN app takes over.
         disconnecting = true
-        scope.launch { runUserDisconnect() }
+        scope.launch { runUserDisconnect(SessionEndReason.EXTERNAL_REVOKE) }
     }
 
     /**
@@ -320,7 +361,7 @@ class OnthecrowVpnService : VpnService() {
             val configJson = xrayJson ?: activeXrayJson
             logd("runConnect: hasConfig=${!configJson.isNullOrBlank()} underlying=$lastUnderlying")
             if (configJson.isNullOrBlank()) {
-                fail("No validated configuration is available")
+                fail("No validated configuration is available", VpnErrorCategory.CONFIG_INVALID)
                 return
             }
             activeXrayJson = configJson
@@ -365,11 +406,18 @@ class OnthecrowVpnService : VpnService() {
                         // problem to escalate, not the retry backoff's.
                         retryPending = false
                         retryJob?.cancel()
+                        // A fresh session's analytics counters start here (a recovery re-dial via
+                        // [restartEngine] deliberately does NOT reset them — it is the same session).
+                        connectedAt = SystemClock.elapsedRealtime()
+                        keepaliveDeadCount = 0
+                        keepaliveInconclusiveCount = 0
+                        tunnelConfirmedThisSession.set(false)
                         // Connected as soon as the engine is up, NOT on the first confirmed probe.
                         // Waiting for the probe left the UI's only button disabled with no way out when
                         // a probe never confirmed (bad config, blocked server); a failing probe is
                         // reported by the recovery ladder anyway.
                         publishStatus(ConnectionStatus.Connected)
+                        analyticsManager.vpnConnected(pendingConnectVia)
                         logd("connect: xray up")
                         startMonitoring()
                     }
@@ -388,12 +436,15 @@ class OnthecrowVpnService : VpnService() {
                     logd("connect: VPN permission is not granted — waiting for the user, not retrying")
                     retryPending = false
                     retryJob?.cancel()
+                    analyticsManager.vpnPermissionResult(VpnPermissionOutcome.MISSING_AT_ESTABLISH)
+                    analyticsManager.vpnError(VpnErrorCategory.PERMISSION_DENIED, terminal = true)
                     publishStatus(ConnectionStatus.Error("VPN permission is required"))
                     ServiceCompat.stopForeground(this@OnthecrowVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
                     stopSelf()
                     return@onFailure
                 }
                 logd("runConnect FAILED: ${error.stackTraceToString()}")
+                errorReporter.report(ErrorDomain.VPN_TUNNEL, error)
                 scheduleRetry(error.message ?: "Failed to start VPN")
             }
         }
@@ -468,6 +519,8 @@ class OnthecrowVpnService : VpnService() {
         val rebuilt = runCatching { establishTun() }.getOrElse {
             // The old interface is untouched when establish() fails, so the tunnel keeps working.
             logd("tun rebuild($reason) failed, keeping the current interface: ${it.message}")
+            analyticsManager.vpnTunRebuild(TunRebuildOutcome.ESTABLISH_FAILED)
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, it)
             return false
         }
         tunInterface = rebuilt
@@ -481,7 +534,11 @@ class OnthecrowVpnService : VpnService() {
             logd("tun rebuild($reason): engine back on the new interface — $result")
             // The caller decides what to do about a failure; what must NOT happen is what happened
             // before, which was to log it and carry on reporting Connected over a tun nothing reads.
-            result is XrayRunResult.Success
+            val ok = result is XrayRunResult.Success
+            analyticsManager.vpnTunRebuild(
+                if (ok) TunRebuildOutcome.REBUILT_OK else TunRebuildOutcome.ENGINE_NOT_BACK,
+            )
+            ok
         } finally {
             // In the finally, because a throw between here and there used to leak this descriptor for
             // good — in a process that no longer dies, one per rebuild against a limit of 1024. The
@@ -548,6 +605,7 @@ class OnthecrowVpnService : VpnService() {
         // way. (The old code detached to an int and never closed it, which was survivable only because
         // the process holding it was about to be killed — the very thing this split removes.)
         val tun = runCatching { master.dup() }.getOrElse {
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, it)
             return XrayRunResult.Failure("Could not duplicate the tun descriptor: ${it.message}")
         }
         val started = SystemClock.elapsedRealtime()
@@ -652,7 +710,7 @@ class OnthecrowVpnService : VpnService() {
      * besides the above, that status drives `VpnSyncWorker` to reset its active key, so a genuine remote
      * config change arriving mid-recovery would be silently swallowed.
      */
-    private suspend fun runUserDisconnect() {
+    private suspend fun runUserDisconnect(reason: SessionEndReason) {
         operationMutex.withLock {
             logd("runUserDisconnect")
             // Cancel any pending retry FIRST: the whole point of an uncapped retry policy is that only
@@ -663,6 +721,7 @@ class OnthecrowVpnService : VpnService() {
             paramsStore.clear()
             publishStatus(ConnectionStatus.Disconnecting)
             stopMonitoring()
+            reportSessionEnd(reason)
             stopTunnel()
             publishStatus(ConnectionStatus.Disconnected)
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -811,6 +870,7 @@ class OnthecrowVpnService : VpnService() {
                 throw cancellation
             } catch (error: Throwable) {
                 logd("$reason: recovery threw (${error.javaClass.simpleName}: ${error.message}) — watching anyway")
+                errorReporter.report(ErrorDomain.VPN_TUNNEL, error)
             }
             drainPendingTrigger()
             keepAliveLoop()
@@ -871,9 +931,24 @@ class OnthecrowVpnService : VpnService() {
             return
         }
         val wakeLock = acquireRecoveryWakeLock()
+        val started = SystemClock.elapsedRealtime()
         try {
             withContext(NonCancellable) {
-                operationMutex.withLock { runLadder(reason, patienceMs, rebuildTun) }
+                operationMutex.withLock {
+                    val outcome = runLadder(reason, patienceMs, rebuildTun)
+                    // One event per ladder run (null = stood down for a user disconnect — not reported).
+                    // `attempts` reads the restart counter post-run: a confirmed probe resets it to 0, so
+                    // a recovered run buckets to "1" and an unrecovered one carries the climbing count.
+                    if (outcome != null) {
+                        analyticsManager.vpnRecovery(
+                            trigger = recoveryTriggerOf(reason),
+                            outcome = outcome,
+                            attempts = engineRestartAttempt,
+                            durationMs = SystemClock.elapsedRealtime() - started,
+                            transport = currentTransport(),
+                        )
+                    }
+                }
             }
         } finally {
             recovering.set(false)
@@ -881,7 +956,7 @@ class OnthecrowVpnService : VpnService() {
         }
     }
 
-    private suspend fun runLadder(reason: String, patienceMs: Long, rebuildTun: Boolean = false) {
+    private suspend fun runLadder(reason: String, patienceMs: Long, rebuildTun: Boolean = false): RecoveryOutcome? {
         val startedWall = SystemClock.elapsedRealtime()
         // uptimeMillis stops during CPU suspend; elapsedRealtime does not. The difference between them
         // IS the time this device spent asleep, measured rather than guessed.
@@ -921,7 +996,7 @@ class OnthecrowVpnService : VpnService() {
         // exactly what did eventually fix it at 06:27 that night.
         if (refreshUnderlyingFromSystem() == null) {
             logd("recover($reason): no underlying network — standing down until one appears")
-            return
+            return RecoveryOutcome.STOOD_DOWN_NO_NETWORK
         }
 
         var attempt = 0
@@ -929,14 +1004,17 @@ class OnthecrowVpnService : VpnService() {
         // timeout — is a Go timer on CLOCK_MONOTONIC and does not advance during suspend either. Wall
         // time would spend the whole budget on a single Doze nap without ever asking the tunnel.
         while (awakeElapsed() < patienceMs) {
-            if (disconnecting) return logd("recover($reason): standing down — user is disconnecting")
+            if (disconnecting) {
+                logd("recover($reason): standing down — user is disconnecting")
+                return null
+            }
             if (sleptMs() > LADDER_ABANDON_SLEEP_MS) {
                 // The device slept through this ladder, so everything it has learned is stale and the
                 // rungs below would act on it: the same overnight run escalated to a process restart on
                 // evidence gathered 75 minutes earlier. Abandoning is cheap — the caller falls straight
                 // through to the keepalive loop, and waking fires its own triggers.
                 logd("recover($reason): abandoning — device slept ${sleptMs()}ms mid-ladder")
-                return
+                return RecoveryOutcome.ABANDONED_SLEPT
             }
             val timeout = PROBE_TIMEOUT_STEPS_MS[attempt.coerceAtMost(PROBE_TIMEOUT_STEPS_MS.lastIndex)]
             if (probeTunnel(timeout) == true) {
@@ -960,14 +1038,18 @@ class OnthecrowVpnService : VpnService() {
                     logd("recover($reason): tun rebuilt but the engine did not come back — escalating")
                     restartEngineForRecovery(reason)
                 }
-                return
+                return RecoveryOutcome.RECOVERED_PROBE
             }
             attempt++
             delay(T0_PROBE_RETRY_DELAY_MS)
         }
-        if (disconnecting) return logd("recover($reason): standing down — user is disconnecting")
+        if (disconnecting) {
+            logd("recover($reason): standing down — user is disconnecting")
+            return null
+        }
         if (sleptMs() > LADDER_ABANDON_SLEEP_MS) {
-            return logd("recover($reason): abandoning — device slept ${sleptMs()}ms mid-ladder")
+            logd("recover($reason): abandoning — device slept ${sleptMs()}ms mid-ladder")
+            return RecoveryOutcome.ABANDONED_SLEPT
         }
         logd("recover($reason): T0 dead — $attempt probes over ${awakeElapsed()}ms awake of ${patienceMs}ms")
 
@@ -978,17 +1060,22 @@ class OnthecrowVpnService : VpnService() {
         // interface and the system VPN icon blinked every time. Now only `:xray` dies. The tun is never
         // closed, nothing is re-established, and there is nothing to schedule — which is also why the
         // alarm, `SCHEDULE_EXACT_ALARM` and the battery-optimisation exemption are all gone.
-        if (disconnecting) return logd("recover($reason): standing down — user is disconnecting")
+        if (disconnecting) {
+            logd("recover($reason): standing down — user is disconnecting")
+            return null
+        }
         // Re-checked here and not only above, because T0's patience contains waits and the device can
         // fall asleep inside them — that is precisely how a restart once fired on 75-minute-old evidence.
         if (sleptMs() > LADDER_ABANDON_SLEEP_MS) {
-            return logd("recover($reason): abandoning before T2 — device slept ${sleptMs()}ms mid-ladder")
+            logd("recover($reason): abandoning before T2 — device slept ${sleptMs()}ms mid-ladder")
+            return RecoveryOutcome.ABANDONED_SLEPT
         }
         if (refreshUnderlyingFromSystem() == null) {
-            return logd("recover($reason): no underlying network — not restarting into an outage")
+            logd("recover($reason): no underlying network — not restarting into an outage")
+            return RecoveryOutcome.STOOD_DOWN_NO_NETWORK
         }
         logd("recover($reason): T0 dead (${elapsed()}ms) → T2 engine restart")
-        restartEngineForRecovery(reason)
+        return restartEngineForRecovery(reason)
     }
 
     /**
@@ -1019,22 +1106,26 @@ class OnthecrowVpnService : VpnService() {
         return if (result is XrayRunResult.Success) result else null
     }
 
-    private suspend fun restartEngineForRecovery(reason: String) {
+    private suspend fun restartEngineForRecovery(reason: String): RecoveryOutcome {
         val attempt = ++engineRestartAttempt
         val backoff = restartDelayFor(attempt)
         logd("T2 restart($reason): attempt=$attempt after ${backoff}ms")
         delay(backoff)
-        if (disconnecting) return logd("T2 restart: standing down — user is disconnecting")
-        restartEngine(reason) ?: return
+        if (disconnecting) {
+            logd("T2 restart: standing down — user is disconnecting")
+            return RecoveryOutcome.UNRECOVERED_BACKOFF
+        }
+        restartEngine(reason) ?: return RecoveryOutcome.UNRECOVERED_BACKOFF
         for (wait in ENGINE_PROBE_DELAYS_MS) {
             delay(wait)
             if (probeTunnel(PROBE_TIMEOUT_STEPS_MS.last()) == true) {
                 logd("T2 restart: confirmed alive")
                 onRecoverySucceeded()
-                return
+                return RecoveryOutcome.RECOVERED_ENGINE_RESTART
             }
         }
         logd("T2 restart: still no answer — the next trigger will try again")
+        return RecoveryOutcome.UNRECOVERED_BACKOFF
     }
 
     /**
@@ -1051,10 +1142,23 @@ class OnthecrowVpnService : VpnService() {
     private fun noteTunnelHealthy() {
         retryPending = false
         engineRestartAttempt = 0
+        // First confirmed round-trip of the session = honest time-to-usable. Gated so it fires once per
+        // session (reset in [runConnect]); noteTunnelHealthy itself runs on every keepalive.
+        if (connectedAt != null && tunnelConfirmedThisSession.compareAndSet(false, true)) {
+            analyticsManager.vpnTunnelConfirmed(
+                firstProbeMs = SystemClock.elapsedRealtime() - lastEstablishAt,
+                via = if (recovering.get()) ConfirmVia.RECOVERY else ConfirmVia.FRESH,
+            )
+        }
         publishStatus(ConnectionStatus.Connected)
     }
 
-    private fun onRecoverySucceeded() = noteTunnelHealthy()
+    private fun onRecoverySucceeded() {
+        // The ladder confirmed a re-establish (T0 re-probe or T2 restart). Distinct from a fresh connect
+        // so activation rate is not inflated by reconnects; fired only here, never per keepalive.
+        analyticsManager.vpnConnected(ConnectVia.RECOVERY)
+        noteTunnelHealthy()
+    }
 
     /**
      * How long to wait before the restarting alarm fires, as a function of how many restarts in a row
@@ -1138,6 +1242,80 @@ class OnthecrowVpnService : VpnService() {
         else -> "UNKNOWN($reason)"
     }
 
+    // ---- Analytics helpers (all fire-and-forget; main process) ----
+
+    /**
+     * Emit `vpn_session_end` + `vpn_keepalive_health` for a session that reached Connected, then clear
+     * the session state. No-ops if the tunnel never came up ([connectedAt] null), so a connect that
+     * failed before Connected is reported by `connect_result`/`vpn_error`, not as a session.
+     */
+    private fun reportSessionEnd(reason: SessionEndReason) {
+        val startedAt = connectedAt ?: return
+        analyticsManager.vpnSessionEnd(reason, SystemClock.elapsedRealtime() - startedAt)
+        analyticsManager.vpnKeepaliveHealth(
+            window = if (keepaliveDeadCount >= KEEPALIVE_DEGRADED_DEAD_THRESHOLD) {
+                KeepaliveWindow.DEGRADED
+            } else {
+                KeepaliveWindow.HEALTHY
+            },
+            deadCount = keepaliveDeadCount,
+            inconclusiveCount = keepaliveInconclusiveCount,
+        )
+        connectedAt = null
+    }
+
+    /** Map a ladder trigger reason string to the bounded analytics enum (never the raw string). */
+    private fun recoveryTriggerOf(reason: String): RecoveryTrigger = when {
+        reason.contains("path changed") -> RecoveryTrigger.NETWORK_MOVED
+        reason.contains("network confirmed") -> RecoveryTrigger.NETWORK_CONFIRMED
+        reason.contains("link") -> RecoveryTrigger.LINK_CHANGE
+        reason.contains("screen") -> RecoveryTrigger.SCREEN_ON
+        reason.contains("idle") -> RecoveryTrigger.DOZE_EXIT
+        reason.contains("engine died") -> RecoveryTrigger.ENGINE_DIED
+        reason.contains("keepalive") -> RecoveryTrigger.KEEPALIVE_FAIL
+        else -> RecoveryTrigger.OTHER
+    }
+
+    /** Coarse underlying-transport TYPE — the only network detail analytics may carry. */
+    private fun currentTransport(): Transport? {
+        val caps = lastUnderlying?.let { caps(it) } ?: return null
+        return when {
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> Transport.WIFI
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> Transport.CELLULAR
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> Transport.ETHERNET
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> Transport.VPN
+            else -> Transport.UNKNOWN
+        }
+    }
+
+    /** Best-effort cause of the last `:xray` process exit, mapped to the bounded enum. */
+    private fun latestXrayExitReason(): EngineDeathReason {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return EngineDeathReason.OTHER
+        return runCatching {
+            val manager = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            manager.getHistoricalProcessExitReasons(packageName, /* pid = */ 0, EXIT_REASONS_TO_LOG)
+                .firstOrNull { it.processName.endsWith(XRAY_PROCESS_SUFFIX) }
+                ?.let { mapExitReason(it.reason) }
+                ?: EngineDeathReason.OTHER
+        }.getOrElse { EngineDeathReason.OTHER }
+    }
+
+    private fun mapExitReason(reason: Int): EngineDeathReason = when (reason) {
+        ApplicationExitInfo.REASON_ANR -> EngineDeathReason.ANR
+        ApplicationExitInfo.REASON_CRASH -> EngineDeathReason.CRASH_JVM
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> EngineDeathReason.CRASH_NATIVE
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> EngineDeathReason.DEPENDENCY_DIED
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> EngineDeathReason.EXCESSIVE_RESOURCE
+        ApplicationExitInfo.REASON_EXIT_SELF -> EngineDeathReason.EXIT_SELF
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> EngineDeathReason.INIT_FAILURE
+        ApplicationExitInfo.REASON_LOW_MEMORY -> EngineDeathReason.LOW_MEMORY
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> EngineDeathReason.PERMISSION_CHANGE
+        ApplicationExitInfo.REASON_SIGNALED -> EngineDeathReason.SIGNALED
+        ApplicationExitInfo.REASON_USER_REQUESTED -> EngineDeathReason.USER_REQUESTED
+        ApplicationExitInfo.REASON_USER_STOPPED -> EngineDeathReason.USER_STOPPED
+        else -> EngineDeathReason.OTHER
+    }
+
     /**
      * Publish a status to the main process AND remember it, so a main process that starts later can
      * ask what the truth is instead of assuming the tunnel is down.
@@ -1206,11 +1384,18 @@ class OnthecrowVpnService : VpnService() {
             if (++keepaliveRounds % TCP_PROBE_EVERY_N_ROUNDS == 0) {
                 withContext(Dispatchers.IO) { probeTcpForDiagnosis() }
             }
-            val alive = probeTunnel(PROBE_TIMEOUT_MS) ?: continue
+            val alive = probeTunnel(PROBE_TIMEOUT_MS)
+            if (alive == null) {
+                // Inconclusive = the process was frozen mid-probe by Doze (measured nothing). Counted
+                // apart from real failures so a Doze freeze never scores as a tunnel failure.
+                keepaliveInconclusiveCount++
+                continue
+            }
             if (alive) {
                 fails = 0
                 noteTunnelHealthy()
             } else {
+                keepaliveDeadCount++
                 fails++
                 logd("keepalive: probe failed ($fails/$KEEPALIVE_FAILS_BEFORE_RECOVER)")
                 if (fails >= KEEPALIVE_FAILS_BEFORE_RECOVER) {
@@ -1472,7 +1657,10 @@ class OnthecrowVpnService : VpnService() {
         val filter = IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
         runCatching { registerReceiver(receiver, filter) }
             .onSuccess { idleModeReceiver = receiver }
-            .onFailure { logd("could not register the idle-mode receiver (${it.message}) — that trigger is lost") }
+            .onFailure {
+                logd("could not register the idle-mode receiver (${it.message}) — that trigger is lost")
+                errorReporter.report(ErrorDomain.VPN_TUNNEL, it)
+            }
     }
 
     /**
@@ -1606,12 +1794,18 @@ class OnthecrowVpnService : VpnService() {
     private fun onEngineDied() {
         if (activeXrayJson == null) return
         logd("engine process died unexpectedly — recovering")
-        scope.launch { startTunnelJob("engine died", TunnelStart.FORCE_RECOVER) }
+        scope.launch {
+            // Best-effort cause from the OS exit record for :xray (mapped category only — never the
+            // free-form description). Read off the binder thread, on the coroutine.
+            analyticsManager.vpnEngineDeath(latestXrayExitReason())
+            startTunnelJob("engine died", TunnelStart.FORCE_RECOVER)
+        }
     }
 
     private fun protectSocket(fd: Int): Boolean {
         val protectedOk = runCatching { protect(fd) }.getOrElse {
             logd("protect fd=$fd threw: ${it.message}")
+            errorReporter.report(ErrorDomain.SOCKET_PROTECT, it)
             false
         }
         return protectedOk
@@ -1840,7 +2034,10 @@ class OnthecrowVpnService : VpnService() {
                 connectivityManager().registerNetworkCallback(request, callback)
             }
         }.onSuccess { networkCallback = callback }
-            .onFailure { logd("FATAL: no underlying-network callback (${it.message}) — recovery is blind") }
+            .onFailure {
+                logd("FATAL: no underlying-network callback (${it.message}) — recovery is blind")
+                errorReporter.report(ErrorDomain.VPN_TUNNEL, it)
+            }
     }
 
     /**
@@ -1894,7 +2091,7 @@ class OnthecrowVpnService : VpnService() {
      * TERMINAL. Only for failures retrying cannot fix — no configuration at all, an allowlist whose
      * apps are gone, permission revoked. Everything network-shaped goes through [scheduleRetry].
      */
-    private fun fail(message: String) {
+    private fun fail(message: String, category: VpnErrorCategory = VpnErrorCategory.UNKNOWN) {
         scope.launch {
             operationMutex.withLock {
                 logd("fail (tearing down): $message")
@@ -1902,6 +2099,8 @@ class OnthecrowVpnService : VpnService() {
                 // Clear persisted config: a fatal failure must NOT crash-restore-crash in a loop.
                 paramsStore.clear()
                 stopMonitoring()
+                analyticsManager.vpnError(category, terminal = true)
+                reportSessionEnd(SessionEndReason.FATAL_ERROR)
                 stopTunnel()
                 publishStatus(ConnectionStatus.Error(message))
                 ServiceCompat.stopForeground(this@OnthecrowVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -1991,6 +2190,10 @@ class OnthecrowVpnService : VpnService() {
 
         private const val XRAY_PROCESS_SUFFIX = ":xray"
         private const val EXIT_REASONS_TO_LOG = 5
+
+        // A session with this many confirmed-DEAD keepalive probes is reported as DEGRADED (a single
+        // blip is tolerated by KEEPALIVE_FAILS_BEFORE_RECOVER, so one dead probe is not "degraded").
+        private const val KEEPALIVE_DEGRADED_DEAD_THRESHOLD = 3
 
         private const val WAKELOCK_TAG = "OnthecrowVPN:recovery"
 

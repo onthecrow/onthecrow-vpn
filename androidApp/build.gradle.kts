@@ -42,6 +42,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(projects.composeApp)
+    implementation(projects.core.analytics)
     implementation(projects.core.vpn.impl)
     // Quick Settings tile talks to the same controller/use cases the UI does.
     implementation(projects.core.vpn.api)

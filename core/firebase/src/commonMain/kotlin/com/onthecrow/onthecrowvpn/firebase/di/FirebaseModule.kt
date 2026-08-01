@@ -1,7 +1,7 @@
 package com.onthecrow.onthecrowvpn.firebase.di
 
+import com.onthecrow.onthecrowvpn.errorreporting.CrashReporter
 import com.onthecrow.onthecrowvpn.firebase.AnalyticsTracker
-import com.onthecrow.onthecrowvpn.firebase.CrashReporter
 import com.onthecrow.onthecrowvpn.firebase.FirestoreClient
 import org.koin.dsl.module
 

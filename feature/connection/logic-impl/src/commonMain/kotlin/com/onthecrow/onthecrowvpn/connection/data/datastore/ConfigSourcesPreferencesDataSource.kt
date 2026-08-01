@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.onthecrow.onthecrowvpn.connection.model.ConfigBundle
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
 import com.onthecrow.onthecrowvpn.connection.model.ConfigSource
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -28,6 +30,7 @@ import kotlin.uuid.Uuid
 internal class ConfigSourcesPreferencesDataSource(
     private val dataStore: DataStore<Preferences>,
     private val json: Json,
+    private val errorReporter: ErrorReporter,
 ) {
     private val writeMutex = Mutex()
 
@@ -82,7 +85,11 @@ internal class ConfigSourcesPreferencesDataSource(
 
     private fun decodeCollapsed(raw: String?): Set<String> {
         if (raw.isNullOrBlank()) return emptySet()
-        return runCatching { json.decodeFromString(STRING_LIST_SERIALIZER, raw).toSet() }.getOrElse { emptySet() }
+        return runCatching { json.decodeFromString(STRING_LIST_SERIALIZER, raw).toSet() }
+            .getOrElse {
+                errorReporter.report(ErrorDomain.DATASTORE, it)
+                emptySet()
+            }
     }
 
     suspend fun migrateLegacyIfNeeded(now: Long) {
@@ -102,7 +109,11 @@ internal class ConfigSourcesPreferencesDataSource(
 
     private fun decodeSources(raw: String?): List<ConfigSource> {
         if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { json.decodeFromString(SOURCES_SERIALIZER, raw) }.getOrElse { emptyList() }
+        return runCatching { json.decodeFromString(SOURCES_SERIALIZER, raw) }.getOrElse {
+            // The whole persisted source list failed to parse — the user's configs vanish silently.
+            errorReporter.report(ErrorDomain.DATASTORE, it)
+            emptyList()
+        }
     }
 
     companion object {

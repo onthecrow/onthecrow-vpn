@@ -395,7 +395,56 @@ approach is settled.
 
 ---
 
-## 16. Build & verify
+## 16. Analytics instrumentation (main process only)
+
+The service fires 8 Firebase events through `AnalyticsManager` (`core:analytics`, an **androidMain-only**
+dep — the module has no macOS target). `OnthecrowVpnService` is a `KoinComponent` and `by inject()`s the
+manager. Fire-and-forget; carries **outcomes/enums/coarse buckets only** — never a server, credential,
+config, destination, or raw count/timestamp. NEVER instrument from `:xray` (no Firebase there).
+
+Where each fires — do not double-fire or move these:
+- `vpn_connected` — `runConnect` success (`via` = `pendingConnectVia`, set in `onStartCommand`: fresh vs
+  restore) AND `onRecoverySucceeded` (`via=recovery`; that hook is the recovery-only path, so it does
+  not fire on routine keepalives).
+- `vpn_tunnel_confirmed` — `noteTunnelHealthy`, gated by `tunnelConfirmedThisSession` (an AtomicBoolean
+  reset per session in `runConnect`) so it fires once, not on every keepalive.
+- `vpn_error` — `fail(message, category)` and the `NotPreparedException` path (category from the call
+  site, never `Error.message`).
+- `vpn_session_end` + `vpn_keepalive_health` — `reportSessionEnd(reason)` from `runUserDisconnect(reason)`
+  and `fail()`; no-ops unless the session reached Connected (`connectedAt != null`). Dead/inconclusive
+  counts come from `keepAliveLoop` (INCONCLUSIVE = Doze-frozen, counted apart so a freeze ≠ a failure).
+- `vpn_recovery` — once per `runLadder` run, fired in `recover()`. `runLadder` and
+  `restartEngineForRecovery` now **return `RecoveryOutcome?`** (null = user-disconnect stand-down, not
+  reported) purely so `recover()` can report the outcome — no control-flow changed. Trigger is mapped
+  from the reason string (`recoveryTriggerOf`); `transport` is the coarse underlying type only.
+- `vpn_engine_death` — `onEngineDied`, best-effort `ApplicationExitInfo.reason` for `:xray` → enum.
+- `vpn_tun_rebuild` — `rebuildTunForApps` branches (rebuilt-ok / establish-failed / engine-not-back).
+
+Keep `RecoveryTrigger`/`RecoveryOutcome`/`EngineDeathReason`/`ConnectVia` (in `core:analytics`) in step
+with the states here. Full plan + deny-list: [`docs/analytics-events.md`](../docs/analytics-events.md).
+
+### Error reporting (caught non-fatals → Crashlytics)
+
+Separately from analytics, unexpected **caught** errors are reported via `ErrorReporter.report(domain,
+throwable)` (`core:error-reporting`, a `commonMain` dep — the module targets android/ios/jvm/macos and
+OWNS the `CrashReporter` port; the concrete binding is real Crashlytics on Android/iOS/macOS, stdout on
+JVM). The service injects it
+(`by inject()`) and reports at: the `scope` CoroutineExceptionHandler, `runConnect` failure, tun-rebuild
+establish failure, tun-fd dup failure, the `startTunnelJob` recovery-dispatch catch, idle-receiver and
+network-callback registration failures, and `protectSocket` throws (`SOCKET_PROTECT`). `ConnectionParamsStore`
+/`SplitTunnelRoutingStore` take a nullable reporter (the service passes it; other callers pass null) and
+report file save/load failures (`DATASTORE`). `RemoteXrayEngine` (the MAIN-process IPC proxy) reports
+binder/transaction/decode/bind failures (`XRAY_IPC`) — but the `:xray` side (`XrayEngineService`,
+`PlatformXrayEngine.android`) NEVER reports (no Firebase there). The impl scrubs the throwable message
+(keeps type + stack); expected control-flow (probe timeouts, close/flush) is deliberately not reported.
+The **iOS NE tunnel** (`OnthecrowTunnelCore`, the iOS analog of `:xray`) is a separate process with no
+Koin: it reports via `core:firebase-crashlytics`, a **Crashlytics-only** Firebase surface that links only
+the Crashlytics closure — never Firestore/gRPC — so the appex stays slim. It reuses the same
+`ErrorReporter` scrubbing. Full map: [`docs/error-reporting.md`](../docs/error-reporting.md).
+
+---
+
+## 17. Build & verify
 
 ```bash
 ./gradlew :androidApp:assembleDebug :androidApp:assembleRelease test
@@ -403,7 +452,8 @@ approach is settled.
 
 `:core:xray:assemble` fails on an unrelated pre-existing jvm-target issue — build the app, not that
 task. After editing a `.kt`, do NOT re-read to verify (Edit would have errored); a source→class
-timestamp check confirms recompilation if needed.
+timestamp check confirms recompilation if needed. The bare `test` task does NOT run the KMP feature
+modules' `jvmTest` — run those explicitly when touching them.
 
 Anything about process priority, the leak window, in-Doze callback delivery, or battery cost is only
 answerable **on a device** — see the "Нерешённое" section of

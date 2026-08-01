@@ -1,6 +1,13 @@
 package com.onthecrow.onthecrowvpn.connection
 
 import androidx.lifecycle.viewModelScope
+import com.onthecrow.onthecrowvpn.analytics.AnalyticsManager
+import com.onthecrow.onthecrowvpn.analytics.ConfigInvalidReason
+import com.onthecrow.onthecrowvpn.analytics.ConnectFailureCategory
+import com.onthecrow.onthecrowvpn.analytics.ConsentResult
+import com.onthecrow.onthecrowvpn.analytics.DisconnectEntryPoint
+import com.onthecrow.onthecrowvpn.analytics.VpnPermissionOutcome
+import com.onthecrow.onthecrowvpn.analytics.SourceKind as AnalyticsSourceKind
 import com.onthecrow.onthecrowvpn.connection.domain.AddSourceResult
 import com.onthecrow.onthecrowvpn.connection.domain.AddSourceUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.CollapsedGroupsUseCase
@@ -37,6 +44,7 @@ internal class ConnectionViewModel(
     private val vpnController: VpnController,
     private val vpnPermissionRequester: VpnPermissionRequester,
     private val vpnConsentRepository: VpnConsentRepository,
+    private val analyticsManager: AnalyticsManager,
     private val navigator: Navigator,
     reducer: ConnectionReducer,
 ) : BaseViewModel<ConnectionEvent, ConnectionState, ConnectionReducer>(reducer) {
@@ -51,8 +59,13 @@ internal class ConnectionViewModel(
                 is ConnectionEvent.OnDeleteSourceClick -> handleDeleteSource(event.sourceId)
                 ConnectionEvent.OnConnectClick -> handleConnectClick()
                 ConnectionEvent.OnConsentAccepted -> handleConsentAccepted()
+                ConnectionEvent.OnConsentDeclined ->
+                    analyticsManager.vpnConsentResult(ConsentResult.DECLINED)
                 ConnectionEvent.OnDisconnectClick -> handleDisconnectClick()
-                ConnectionEvent.OnSettingsClick -> navigator.navigate(SettingsDestination)
+                ConnectionEvent.OnSettingsClick -> {
+                    analyticsManager.settingsOpened()
+                    navigator.navigate(SettingsDestination)
+                }
                 else -> Unit
             }
         }.launchIn(viewModelScope)
@@ -80,7 +93,13 @@ internal class ConnectionViewModel(
             .onEach { sourcesState ->
                 onEvent(ConnectionEvent.OnSourcesChanged(sourcesState))
                 // One-shot: sources were deleted remotely; the worker tears the VPN down if the active
-                // config was affected — here we just inform the user.
+                // config was affected. `revokedActiveSelection` = the removed source held the selection,
+                // so it was an involuntary disconnect (was_active=true).
+                if (sourcesState.revokedActiveSelection) {
+                    analyticsManager.subscriptionRevokedRemote(wasActive = true)
+                } else if (sourcesState.revokedSourceTitles.isNotEmpty()) {
+                    analyticsManager.subscriptionRevokedRemote(wasActive = false)
+                }
                 sourcesState.revokedSourceTitles.forEach { title ->
                     onEvent(
                         ConnectionEvent.OnSnackbarRequested(
@@ -142,6 +161,11 @@ internal class ConnectionViewModel(
     }
 
     private fun handleConfigSelected(ref: ConfigRef) {
+        val previous = state.value.selected
+        analyticsManager.configSelected(
+            sourceKind = analyticsSourceKindOf(ref),
+            isSwitch = previous != null && previous != ref,
+        )
         viewModelScope.launch {
             // Persist only. VpnSyncWorker is the SINGLE owner of live-tunnel switches: it reacts to
             // the selection change while Connected (disconnect → await → prepare → connect,
@@ -154,6 +178,10 @@ internal class ConnectionViewModel(
     }
 
     private fun handleConnectClick() {
+        analyticsManager.connectTapped(
+            hadSelection = state.value.selectedConfig != null,
+            alreadyRunning = state.value.isConnected || state.value.isBusy,
+        )
         // Connected OR mid-transition both mean "stop". Only the second half is new: a tap while
         // Connecting used to start a SECOND connect, so a tunnel that never finished coming up had no
         // way out at all — the one control on the screen could only ask again for the thing that was
@@ -175,6 +203,7 @@ internal class ConnectionViewModel(
             if (vpnConsentRepository.observe().first()) {
                 startConnection(cfg)
             } else {
+                analyticsManager.vpnConsentShown()
                 onEvent(ConnectionEvent.OnConsentRequested)
             }
         }
@@ -182,6 +211,7 @@ internal class ConnectionViewModel(
 
     /** Accept persists the grant (so the disclosure never shows again) and continues the connect. */
     private fun handleConsentAccepted() {
+        analyticsManager.vpnConsentResult(ConsentResult.ACCEPTED)
         viewModelScope.launch {
             vpnConsentRepository.grant()
             val cfg = state.value.selectedConfig ?: return@launch
@@ -193,25 +223,51 @@ internal class ConnectionViewModel(
     private suspend fun startConnection(config: RemoteConfig) {
         when (val result = prepareConnectionConfigUseCase(config.url)) {
             is ConfigValidationResult.Invalid -> {
+                // A link that validated at add time can be dead/revoked at connect time.
+                analyticsManager.connectConfigValidation(ConfigInvalidReason.ENGINE_REJECTED)
                 onEvent(ConnectionEvent.OnSnackbarRequested(result.message, isError = true))
             }
-            is ConfigValidationResult.Valid -> when (val perm = vpnPermissionRequester.requestPermission()) {
-                VpnPermissionResult.Granted -> {
-                    // Non-blocking advisory (e.g. Windows: a system proxy that may bypass the tunnel).
-                    vpnController.connectNotice()?.let { onEvent(ConnectionEvent.OnSnackbarRequested(it)) }
-                    when (val outcome = vpnController.connect(result.xrayJson)) {
-                        ConnectResult.Started -> Unit
-                        is ConnectResult.Failed ->
-                            onEvent(ConnectionEvent.OnSnackbarRequested(outcome.message, isError = true))
+            is ConfigValidationResult.Valid -> {
+                analyticsManager.connectConfigValidation(invalidReason = null)
+                when (val perm = vpnPermissionRequester.requestPermission()) {
+                    VpnPermissionResult.Granted -> {
+                        analyticsManager.vpnPermissionResult(VpnPermissionOutcome.GRANTED)
+                        // Non-blocking advisory (e.g. Windows: a system proxy that may bypass the tunnel).
+                        vpnController.connectNotice()?.let { onEvent(ConnectionEvent.OnSnackbarRequested(it)) }
+                        when (val outcome = vpnController.connect(result.xrayJson)) {
+                            ConnectResult.Started -> analyticsManager.connectResult(failureCategory = null)
+                            is ConnectResult.Failed -> {
+                                analyticsManager.connectResult(ConnectFailureCategory.SERVICE_START_FAILURE)
+                                onEvent(ConnectionEvent.OnSnackbarRequested(outcome.message, isError = true))
+                            }
+                        }
+                    }
+                    is VpnPermissionResult.Denied -> {
+                        analyticsManager.vpnPermissionResult(VpnPermissionOutcome.DENIED)
+                        onEvent(ConnectionEvent.OnSnackbarRequested(perm.message, isError = true))
                     }
                 }
-                is VpnPermissionResult.Denied ->
-                    onEvent(ConnectionEvent.OnSnackbarRequested(perm.message, isError = true))
             }
         }
     }
 
     private fun handleDisconnectClick() {
+        analyticsManager.disconnectTapped(DisconnectEntryPoint.IN_APP)
         viewModelScope.launch { vpnController.disconnect() }
+    }
+
+    /** Analytics source-kind of a ref, resolved from the group that holds it (a category, never an id). */
+    private fun analyticsSourceKindOf(ref: ConfigRef): AnalyticsSourceKind {
+        val group = state.value.groups.firstOrNull { g ->
+            g.sourceId == ref.sourceId || g.rows.any { it.ref == ref }
+        }
+        return when (group?.kind) {
+            com.onthecrow.onthecrowvpn.connection.model.SourceKind.SUBSCRIPTION_URL ->
+                AnalyticsSourceKind.SUBSCRIPTION_URL
+            com.onthecrow.onthecrowvpn.connection.model.SourceKind.XRAY_LINK ->
+                AnalyticsSourceKind.XRAY_LINK
+            // SUBSCRIPTION_ID or an unresolved group (should not happen for a selectable ref).
+            else -> AnalyticsSourceKind.SUBSCRIPTION_ID
+        }
     }
 }

@@ -16,6 +16,8 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
+            implementation(projects.core.analytics)
+            implementation(projects.core.errorReporting)
             implementation(projects.core.coroutines)
             implementation(projects.core.datastore)
             implementation(projects.core.firebase)

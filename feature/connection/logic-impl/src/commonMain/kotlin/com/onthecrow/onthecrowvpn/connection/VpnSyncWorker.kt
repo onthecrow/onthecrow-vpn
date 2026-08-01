@@ -1,5 +1,8 @@
 package com.onthecrow.onthecrowvpn.connection
 
+import com.onthecrow.onthecrowvpn.analytics.AnalyticsManager
+import com.onthecrow.onthecrowvpn.analytics.AutoRestartReason
+import com.onthecrow.onthecrowvpn.analytics.AutoRestartResult
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigValidationResult
 import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
 import com.onthecrow.onthecrowvpn.connection.model.ConfigRef
@@ -28,6 +31,7 @@ internal class VpnSyncWorker(
     private val vpnController: VpnController,
     private val prepareConnectionConfig: PrepareConnectionConfigUseCase,
     private val splitTunnelRepository: SplitTunnelRepository,
+    private val analyticsManager: AnalyticsManager,
     scopeProvider: ApplicationScopeProvider,
 ) {
     private val scope = scopeProvider.scope
@@ -94,11 +98,17 @@ internal class VpnSyncWorker(
             return
         }
         if (previous == current) return
-        // Config changed while connected — restart.
-        restartWith(cfg, current)
+        // Config changed while connected — restart. Attribute it: a selection (ref/url) change vs a
+        // split-tunnel-only change, so settings-driven reconnects are not counted as failures.
+        val reason = if (previous.ref != current.ref || previous.url != current.url) {
+            AutoRestartReason.SELECTION_CHANGE
+        } else {
+            AutoRestartReason.SPLIT_TUNNEL_CHANGE
+        }
+        restartWith(cfg, current, reason)
     }
 
-    private suspend fun restartWith(cfg: RemoteConfig, key: ConfigKey) {
+    private suspend fun restartWith(cfg: RemoteConfig, key: ConfigKey, reason: AutoRestartReason) {
         // Validate BEFORE tearing anything down. Validation runs in the engine process, which is alive
         // and healthy while the tunnel is up — but the disconnect below KILLS it, and validating after
         // that raced the just-killed process into a DeadObjectException, so a split-tunnel change that
@@ -109,6 +119,7 @@ internal class VpnSyncWorker(
             is ConfigValidationResult.Valid -> result.xrayJson
             is ConfigValidationResult.Invalid -> {
                 DebugLog.log("WORKER", "restartWith: INVALID config — ${result.message} — keeping current tunnel")
+                analyticsManager.tunnelAutoRestart(reason, AutoRestartResult.KEPT_ON_INVALID)
                 return
             }
         }
@@ -122,6 +133,7 @@ internal class VpnSyncWorker(
         DebugLog.log("WORKER", "restartWith: torn down — reconnecting")
         vpnController.connect(xrayJson)
         activeKey.value = key
+        analyticsManager.tunnelAutoRestart(reason, AutoRestartResult.RESTARTED)
     }
 
     /**

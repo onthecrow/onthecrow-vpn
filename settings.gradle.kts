@@ -36,9 +36,12 @@ plugins {
 
 include(":androidApp")
 include(":composeApp")
+include(":core:analytics")
 include(":core:coroutines")
+include(":core:error-reporting")
 include(":core:datastore")
 include(":core:firebase")
+include(":core:firebase-crashlytics")
 include(":core:navigation:api")
 include(":core:navigation:impl")
 include(":core:ui")

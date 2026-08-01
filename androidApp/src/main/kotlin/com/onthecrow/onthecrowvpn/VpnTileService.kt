@@ -7,6 +7,9 @@ import android.net.VpnService
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import com.onthecrow.onthecrowvpn.analytics.AnalyticsManager
+import com.onthecrow.onthecrowvpn.analytics.QsBlockedReason
+import com.onthecrow.onthecrowvpn.analytics.QsTileAction
 import com.onthecrow.onthecrowvpn.connection.domain.ConfigValidationResult
 import com.onthecrow.onthecrowvpn.connection.domain.ObserveConfigSourcesUseCase
 import com.onthecrow.onthecrowvpn.connection.domain.PrepareConnectionConfigUseCase
@@ -41,6 +44,7 @@ class VpnTileService : TileService(), KoinComponent {
     private val observeConfigSources: ObserveConfigSourcesUseCase by inject()
     private val prepareConnectionConfig: PrepareConnectionConfigUseCase by inject()
     private val applicationScope: ApplicationScopeProvider by inject()
+    private val analyticsManager: AnalyticsManager by inject()
 
     /** Drives tile rendering only; cancelled as soon as the QS panel closes. */
     private var listeningScope: CoroutineScope? = null
@@ -70,6 +74,7 @@ class VpnTileService : TileService(), KoinComponent {
             status == ConnectionStatus.Connecting ||
             status == ConnectionStatus.PreparingPermission
         if (busyOrUp) {
+            analyticsManager.qsTileAction(QsTileAction.DISCONNECT)
             // Toggle off. Runs on the application scope: the tile stops listening the moment the panel
             // collapses, and this work must outlive that.
             applicationScope.scope.launch { vpnController.disconnect() }
@@ -77,6 +82,7 @@ class VpnTileService : TileService(), KoinComponent {
         }
         // The system consent dialog needs an Activity, which a tile cannot show — hand off to the app.
         if (VpnService.prepare(this) != null) {
+            analyticsManager.qsTileAction(QsTileAction.BLOCKED, QsBlockedReason.NO_PERMISSION)
             openApp()
             return
         }
@@ -86,14 +92,21 @@ class VpnTileService : TileService(), KoinComponent {
     private suspend fun connectSelected() {
         val config = observeConfigSources().first().selectedConfig
         if (config == null) {
+            analyticsManager.qsTileAction(QsTileAction.BLOCKED, QsBlockedReason.NO_CONFIG)
             // Nothing selected yet — let the user pick one in the app.
             withContext(Dispatchers.Main) { openApp() }
             return
         }
         when (val result = prepareConnectionConfig(config.url)) {
-            is ConfigValidationResult.Valid -> vpnController.connect(result.xrayJson)
+            is ConfigValidationResult.Valid -> {
+                analyticsManager.qsTileAction(QsTileAction.CONNECT)
+                vpnController.connect(result.xrayJson)
+            }
             // Validation failed (dead link / revoked): surface it where we can actually explain it.
-            is ConfigValidationResult.Invalid -> withContext(Dispatchers.Main) { openApp() }
+            is ConfigValidationResult.Invalid -> {
+                analyticsManager.qsTileAction(QsTileAction.BLOCKED, QsBlockedReason.CONFIG_INVALID)
+                withContext(Dispatchers.Main) { openApp() }
+            }
         }
     }
 

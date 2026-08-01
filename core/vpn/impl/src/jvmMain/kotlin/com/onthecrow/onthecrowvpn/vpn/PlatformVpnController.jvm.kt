@@ -1,5 +1,7 @@
 package com.onthecrow.onthecrowvpn.vpn
 
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.xray.XrayConfigSanitizer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import java.io.File
 
 /**
@@ -21,15 +25,18 @@ import java.io.File
  *    the native [MacosNeController] bridge. No admin password, no utun sidecar.
  *  - **Windows**: the elevated PowerShell + Wintun sidecar (unchanged).
  */
-actual class PlatformVpnController : VpnController {
+actual class PlatformVpnController : VpnController, KoinComponent {
     private val mutableStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     override val status: StateFlow<ConnectionStatus> = mutableStatus
 
+    // On JVM the CrashReporter is stdout (no Crashlytics backend for desktop yet); reporting keeps the
+    // desktop path consistent and flows through once a real backend is added.
+    private val errorReporter: ErrorReporter by inject()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sanitizer = XrayConfigSanitizer()
     private val mutex = Mutex()
 
-    private val macos = MacosNeController { status -> mutableStatus.value = status }
+    private val macos = MacosNeController({ status -> mutableStatus.value = status }, errorReporter)
 
     private var session: Session? = null
 
@@ -118,6 +125,7 @@ actual class PlatformVpnController : VpnController {
             ConnectResult.Started
         }.getOrElse { error ->
             val message = error.message ?: "Failed to start VPN"
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, error)
             mutableStatus.value = ConnectionStatus.Error(message)
             ConnectResult.Failed(message)
         }

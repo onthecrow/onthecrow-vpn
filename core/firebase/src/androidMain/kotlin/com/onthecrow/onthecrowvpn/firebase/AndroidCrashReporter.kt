@@ -2,7 +2,7 @@ package com.onthecrow.onthecrowvpn.firebase.di
 
 import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.onthecrow.onthecrowvpn.firebase.AndroidFirebaseEnvironment
-import com.onthecrow.onthecrowvpn.firebase.CrashReporter
+import com.onthecrow.onthecrowvpn.errorreporting.CrashReporter
 
 internal actual fun createCrashReporter(): CrashReporter = AndroidCrashReporter()
 

@@ -133,6 +133,20 @@ bad new config therefore never costs the working tunnel.
 
 ---
 
+## Analytics
+
+Recovery and lifecycle are instrumented with Firebase events (`vpn_connected`, `vpn_error`,
+`vpn_session_end`, `vpn_recovery`, `vpn_engine_death`, `vpn_tun_rebuild`, `vpn_tunnel_confirmed`,
+`vpn_keepalive_health`), fired from `OnthecrowVpnService` in the **main process only**. They carry
+**outcomes, coarse buckets and enums** — a recovery run reports its trigger/outcome/attempt-bucket/
+duration-bucket and the coarse transport type, never a network id, address, or timing. To make this
+possible `runLadder` (and `restartEngineForRecovery`) now **return a `RecoveryOutcome?`** so `recover()`
+can report one event per run; this changed no control flow. The full plan is in
+[`analytics-events.md`](./analytics-events.md), and the per-hook map is section 16 of
+[`.claude/vpn-service.md`](../.claude/vpn-service.md).
+
+---
+
 ## What is still open (needs a device)
 
 Listed with exact measurements in the "Нерешённое" section of

@@ -61,5 +61,19 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
+        // Error reporting is wired on android (RemoteXrayEngine) and jvm/desktop (PlatformXrayEngine.jvm)
+        // ONLY — deliberately NOT commonMain. core:error-reporting is now Firebase-free (it owns the
+        // CrashReporter port), so this is no longer about a Firebase leak: the iOS xray path simply does
+        // not report (the NE reports from OnthecrowTunnelCore via core:firebase-crashlytics, the
+        // Crashlytics-only surface). Keeping it per-target avoids adding an unused reporter to the appex,
+        // and — critically — never let core:firebase reach an APPLE consumer of core:xray: in commonMain a
+        // firebase-backed reporter would drag Firestore/gRPC into the NE appex. The `:xray` android
+        // process never reports (no Firebase there).
+        androidMain.dependencies {
+            implementation(projects.core.errorReporting)
+        }
+        jvmMain.dependencies {
+            implementation(projects.core.errorReporting)
+        }
     }
 }

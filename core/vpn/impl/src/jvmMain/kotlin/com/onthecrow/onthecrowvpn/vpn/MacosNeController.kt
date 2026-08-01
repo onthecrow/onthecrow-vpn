@@ -1,5 +1,7 @@
 package com.onthecrow.onthecrowvpn.vpn
 
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -22,6 +24,7 @@ import java.util.Base64
  */
 internal class MacosNeController(
     private val emit: (ConnectionStatus) -> Unit,
+    private val errorReporter: ErrorReporter,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private var process: Process? = null
@@ -46,6 +49,7 @@ internal class MacosNeController(
             ConnectResult.Started
         } catch (t: Throwable) {
             val message = t.message ?: "Failed to start macOS VPN"
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, t)
             emit(ConnectionStatus.Error(message))
             ConnectResult.Failed(message)
         }
@@ -59,6 +63,7 @@ internal class MacosNeController(
     @Synchronized
     fun ensureActivated() {
         runCatching { ensureBridge(); send("activate") }
+            .onFailure { errorReporter.report(ErrorDomain.VPN_TUNNEL, it) }
     }
 
     @Synchronized

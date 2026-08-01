@@ -1,0 +1,6 @@
+language = Objective-C
+headers = FirebaseCore/FirebaseCore-umbrella.h \
+          FirebaseCrashlytics/FirebaseCrashlytics.h
+package = platform.FirebaseCrashlytics
+noStringConversion = char16_t
+depends = platform.posix

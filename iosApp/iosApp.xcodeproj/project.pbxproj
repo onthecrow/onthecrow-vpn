@@ -7,10 +7,21 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		060FC734F3D3B1C0409641A2 /* nanopb.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001A /* nanopb.xcframework */; };
 		067E1D192FD2BAAB000C22B9 /* LibXray.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 067E1D182FD2BAAB000C22B9 /* LibXray.xcframework */; };
 		067E1D222FD2BD83000C22B9 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 067E1D212FD2BD83000C22B9 /* NetworkExtension.framework */; };
 		067E1D2A2FD2BD83000C22B9 /* PacketTunnel.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 067E1D202FD2BD83000C22B9 /* PacketTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		067E1D312FD2CB16000C22B9 /* LibXray.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 067E1D182FD2BAAB000C22B9 /* LibXray.xcframework */; };
+		41B54B46F2BFFE23D57816ED /* FirebaseInstallations.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000015 /* FirebaseInstallations.xcframework */; };
+		6D6471254773E1DB9151CBD7 /* FirebaseCoreInternal.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000014 /* FirebaseCoreInternal.xcframework */; };
+		7C1E12348A310454615A7225 /* FirebaseSessions.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001E /* FirebaseSessions.xcframework */; };
+		7EE6C51AD4F3A6067F4B626E /* Promises.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000020 /* Promises.xcframework */; };
+		7FF528BCFE65A9E87B124732 /* FirebaseCoreExtension.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001B /* FirebaseCoreExtension.xcframework */; };
+		86724F09EB3B7BA5AB55CED2 /* FirebaseCrashlytics.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001C /* FirebaseCrashlytics.xcframework */; };
+		9759C5BCF14EF757F91D9D18 /* FBLPromises.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000011 /* FBLPromises.xcframework */; };
+		99443E77A092D7AC18F97920 /* GoogleDataTransport.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001F /* GoogleDataTransport.xcframework */; };
+		BEA1129FC56F9110A0A2B57F /* FirebaseCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000013 /* FirebaseCore.xcframework */; };
+		F4BE46C2261937764408B7A6 /* GoogleUtilities.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000019 /* GoogleUtilities.xcframework */; };
 		FB0000000000000000000101 /* FBLPromises.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000011 /* FBLPromises.xcframework */; };
 		FB0000000000000000000102 /* FirebaseAnalytics.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000012 /* FirebaseAnalytics.xcframework */; };
 		FB0000000000000000000103 /* FirebaseCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000013 /* FirebaseCore.xcframework */; };
@@ -61,6 +72,7 @@
 		FB0000000000000000000217 /* grpcpp.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000027 /* grpcpp.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FB0000000000000000000218 /* leveldb.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000028 /* leveldb.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		FB0000000000000000000219 /* openssl_grpc.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = FB0000000000000000000029 /* openssl_grpc.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		FFD05A2927DE155564A76988 /* FirebaseRemoteConfigInterop.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = FB000000000000000000001D /* FirebaseRemoteConfigInterop.xcframework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -190,6 +202,8 @@
 		};
 		C351BE788214FCAB53AD7415 /* Configuration */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = Configuration;
 			sourceTree = "<group>";
 		};
@@ -202,6 +216,18 @@
 			files = (
 				067E1D222FD2BD83000C22B9 /* NetworkExtension.framework in Frameworks */,
 				067E1D312FD2CB16000C22B9 /* LibXray.xcframework in Frameworks */,
+				86724F09EB3B7BA5AB55CED2 /* FirebaseCrashlytics.xcframework in Frameworks */,
+				7C1E12348A310454615A7225 /* FirebaseSessions.xcframework in Frameworks */,
+				7FF528BCFE65A9E87B124732 /* FirebaseCoreExtension.xcframework in Frameworks */,
+				FFD05A2927DE155564A76988 /* FirebaseRemoteConfigInterop.xcframework in Frameworks */,
+				99443E77A092D7AC18F97920 /* GoogleDataTransport.xcframework in Frameworks */,
+				7EE6C51AD4F3A6067F4B626E /* Promises.xcframework in Frameworks */,
+				BEA1129FC56F9110A0A2B57F /* FirebaseCore.xcframework in Frameworks */,
+				6D6471254773E1DB9151CBD7 /* FirebaseCoreInternal.xcframework in Frameworks */,
+				41B54B46F2BFFE23D57816ED /* FirebaseInstallations.xcframework in Frameworks */,
+				F4BE46C2261937764408B7A6 /* GoogleUtilities.xcframework in Frameworks */,
+				060FC734F3D3B1C0409641A2 /* nanopb.xcframework in Frameworks */,
+				9759C5BCF14EF757F91D9D18 /* FBLPromises.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -310,6 +336,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 067E1D2B2FD2BD83000C22B9 /* Build configuration list for PBXNativeTarget "PacketTunnel" */;
 			buildPhases = (
+				08C2BE01E54C83FC78268915 /* Copy Firebase Config */,
 				067E1D302FD2CACB000C22B9 /* ShellScript */,
 				067E1D1C2FD2BD83000C22B9 /* Sources */,
 				067E1D1D2FD2BD83000C22B9 /* Frameworks */,
@@ -323,8 +350,6 @@
 				067E1D232FD2BD83000C22B9 /* PacketTunnel */,
 			);
 			name = PacketTunnel;
-			packageProductDependencies = (
-			);
 			productName = PacketTunnel;
 			productReference = 067E1D202FD2BD83000C22B9 /* PacketTunnel.appex */;
 			productType = "com.apple.product-type.app-extension";
@@ -350,8 +375,6 @@
 				9C39F4F4C20CCA3E09E9CAE6 /* iosApp */,
 			);
 			name = iosApp;
-			packageProductDependencies = (
-			);
 			productName = iosApp;
 			productReference = 68DAB6C0C1FA5A7AB161FDE2 /* OnthecrowVPN.app */;
 			productType = "com.apple.product-type.application";
@@ -428,6 +451,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\ncd \"$SRCROOT/..\"\n./gradlew :core:vpn:ios-tunnel:embedAndSignAppleFrameworkForXcode\n";
+		};
+		08C2BE01E54C83FC78268915 /* Copy Firebase Config */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Firebase Config";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "CONFIG_FILE=\"$SRCROOT/Configuration/GoogleService-Info-${CONFIGURATION}.plist\"\nDESTINATION=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/GoogleService-Info.plist\"\n\nif [ -f \"$CONFIG_FILE\" ]; then\n  cp \"$CONFIG_FILE\" \"$DESTINATION\"\n  plutil -replace BUNDLE_ID -string \"$PRODUCT_BUNDLE_IDENTIFIER\" \"$DESTINATION\" || true\nelse\n  echo \"warning: Firebase config missing at $CONFIG_FILE. NE crash reporting disabled for this build.\"\nfi\n";
 		};
 		13A9974A58782A00C296E183 /* Compile Kotlin Framework */ = {
 			isa = PBXShellScriptBuildPhase;

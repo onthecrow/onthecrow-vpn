@@ -47,7 +47,7 @@ val connectionLogicModule = module {
         get<DataStoreFactory>().createPreferencesDataStore(VPN_SETTINGS_DATA_STORE_NAME)
     }
     single {
-        SplitTunnelRepositoryImpl(get(named(VPN_SETTINGS_DATA_STORE_QUALIFIER)), get())
+        SplitTunnelRepositoryImpl(get(named(VPN_SETTINGS_DATA_STORE_QUALIFIER)), get(), get())
     } bind SplitTunnelRepository::class
     single {
         VpnConsentRepositoryImpl(get(named(VPN_SETTINGS_DATA_STORE_QUALIFIER)))
@@ -56,6 +56,7 @@ val connectionLogicModule = module {
         ConfigSourcesPreferencesDataSource(
             dataStore = get(named(CONNECTION_CONFIG_DATA_STORE_QUALIFIER)),
             json = get(),
+            errorReporter = get(),
         )
     }
     single { ConfigSourcesRepositoryImpl(get()) } bind ConfigSourcesRepository::class
@@ -67,14 +68,14 @@ val connectionLogicModule = module {
             }
         }
     }
-    single { SubscriptionUrlFetcher(get(), get(), get()) }
+    single { SubscriptionUrlFetcher(get(), get(), get(), get()) }
     single { ConfigSourcesOrchestrator(get(), get(), get()) }
     single { ObserveConfigSourcesUseCaseImpl(get()) } bind ObserveConfigSourcesUseCase::class
     single { CollapsedGroupsUseCaseImpl(get()) } bind CollapsedGroupsUseCase::class
-    single { AddSourceUseCaseImpl(get(), get(), get(), get(), get()) } bind AddSourceUseCase::class
-    single { RemoveSourceUseCaseImpl(get(), get()) } bind RemoveSourceUseCase::class
-    single { RefreshSourceUseCaseImpl(get(), get(), get()) } bind RefreshSourceUseCase::class
+    single { AddSourceUseCaseImpl(get(), get(), get(), get(), get(), get()) } bind AddSourceUseCase::class
+    single { RemoveSourceUseCaseImpl(get(), get(), get()) } bind RemoveSourceUseCase::class
+    single { RefreshSourceUseCaseImpl(get(), get(), get(), get()) } bind RefreshSourceUseCase::class
     single { SelectConfigUseCaseImpl(get()) } bind SelectConfigUseCase::class
     single { PrepareConnectionConfigUseCaseImpl(get()) } bind PrepareConnectionConfigUseCase::class
-    single(createdAtStart = true) { VpnSyncWorker(get(), get(), get(), get(), get()) }
+    single(createdAtStart = true) { VpnSyncWorker(get(), get(), get(), get(), get(), get()) }
 }

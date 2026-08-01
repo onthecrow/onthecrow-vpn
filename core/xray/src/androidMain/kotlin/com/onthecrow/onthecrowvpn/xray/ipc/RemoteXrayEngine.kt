@@ -8,6 +8,8 @@ import android.os.IBinder
 import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import android.os.Process
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.xray.AndroidXrayEnvironment
 import com.onthecrow.onthecrowvpn.xray.OtcLog
 import com.onthecrow.onthecrowvpn.xray.XrayEngine
@@ -19,6 +21,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 
 private const val LOG_TAG = "XRAYPROXY"
 
@@ -48,7 +52,11 @@ internal object XrayEngineHolder {
 }
 
 internal class RemoteXrayEngine(
-) : XrayEngine {
+) : XrayEngine, KoinComponent {
+
+    // Caught IPC non-fatals → Crashlytics (message scrubbed). This proxy lives in the MAIN process, so
+    // Firebase is available; the `:xray` side (XrayEngineService) must never report.
+    private val errorReporter: ErrorReporter by inject()
 
     /**
      * Sent to `:xray` on every call so it can bounce `protect()` back here if it turns out it cannot do
@@ -127,7 +135,10 @@ internal class RemoteXrayEngine(
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             OtcLog.log(LOG_TAG, "connected to :xray")
             runCatching { service?.linkToDeath(deathRecipient, 0) }
-                .onFailure { OtcLog.log(LOG_TAG, "linkToDeath failed: ${it.message}") }
+                .onFailure {
+                    OtcLog.log(LOG_TAG, "linkToDeath failed: ${it.message}")
+                    errorReporter.report(ErrorDomain.XRAY_IPC, it)
+                }
             engine = service
             pendingConnection?.complete(service)
         }
@@ -317,6 +328,7 @@ whose connection has gone Inactive — which one kept alive by a 3s keepalive ne
                 reply.readString()
             } catch (error: Exception) {
                 OtcLog.log(LOG_TAG, "${request.method} transaction failed: ${error.javaClass.simpleName}: ${error.message}")
+                errorReporter.report(ErrorDomain.XRAY_IPC, error)
                 engine = null
                 null
             } finally {
@@ -328,6 +340,7 @@ whose connection has gone Inactive — which one kept alive by a 3s keepalive ne
             XrayIpcPayloads.json.decodeFromString(IpcResponse.serializer(), responseJson.orEmpty())
         }.getOrElse {
             OtcLog.log(LOG_TAG, "unreadable response from :xray: ${it.message}")
+            errorReporter.report(ErrorDomain.XRAY_IPC, it)
             null
         }?.also { response -> response.pid?.let { enginePid = it } }
     }
@@ -346,6 +359,7 @@ whose connection has gone Inactive — which one kept alive by a 3s keepalive ne
                 context.bindService(intent, connection, Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT)
             }.getOrElse {
                 OtcLog.log(LOG_TAG, "bindService threw: ${it.message}")
+                errorReporter.report(ErrorDomain.XRAY_IPC, it)
                 false
             }
             if (!requested) {

@@ -1,6 +1,8 @@
 package com.onthecrow.onthecrowvpn.vpn
 
 import android.content.Context
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.vpn.model.ResolvedRouting
 import com.onthecrow.onthecrowvpn.xray.OtcLog
 import java.io.File
@@ -22,14 +24,22 @@ import java.io.File
  * one reader, so a plain file is enough — SharedPreferences and DataStore are both unsafe across
  * processes.
  */
-internal class SplitTunnelRoutingStore(context: Context) {
+internal class SplitTunnelRoutingStore(
+    context: Context,
+    // Nullable so callers without one (SplitTunnelAndroidSync) keep working; the service passes the
+    // injected reporter.
+    private val errorReporter: ErrorReporter? = null,
+) {
     private val file = File(context.filesDir, FILE_NAME)
 
     fun save(routing: ResolvedRouting) {
         runCatching {
             // Two lines, disallow then allow, each comma-separated. At most one is ever populated.
             file.writeText(routing.disallow.joinToString(",") + "\n" + routing.allow.joinToString(","))
-        }.onFailure { OtcLog.log(TAG, "routing save failed: ${it.message}") }
+        }.onFailure {
+            OtcLog.log(TAG, "routing save failed: ${it.message}")
+            errorReporter?.report(ErrorDomain.DATASTORE, it)
+        }
     }
 
     fun load(): ResolvedRouting? = runCatching {
@@ -41,6 +51,7 @@ internal class SplitTunnelRoutingStore(context: Context) {
         )
     }.getOrElse {
         OtcLog.log(TAG, "routing load failed: ${it.message}")
+        errorReporter?.report(ErrorDomain.DATASTORE, it)
         null
     }
 

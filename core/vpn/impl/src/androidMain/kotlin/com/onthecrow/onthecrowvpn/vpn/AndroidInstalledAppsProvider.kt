@@ -3,6 +3,8 @@ package com.onthecrow.onthecrowvpn.vpn
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.vpn.domain.InstalledAppsProvider
 import com.onthecrow.onthecrowvpn.vpn.model.InstalledApp
 import kotlinx.coroutines.Dispatchers
@@ -17,7 +19,9 @@ import kotlinx.coroutines.withContext
  * launcher icon is precisely the kind a user might route by hand, whereas the bare package list is
  * mostly system components nobody picks.
  */
-internal class AndroidInstalledAppsProvider : InstalledAppsProvider {
+internal class AndroidInstalledAppsProvider(
+    private val errorReporter: ErrorReporter,
+) : InstalledAppsProvider {
 
     override suspend fun installedApps(): List<InstalledApp> = withContext(Dispatchers.IO) {
         val context = AndroidVpnEnvironment.applicationContext
@@ -36,7 +40,10 @@ internal class AndroidInstalledAppsProvider : InstalledAppsProvider {
                 .map { InstalledApp(it.packageName, packageManager.getApplicationLabel(it).toString()) }
                 .sortedBy { it.label.lowercase() }
                 .toList()
-        }.getOrElse { emptyList() }
+        }.getOrElse {
+            errorReporter.report(ErrorDomain.INSTALLED_APPS, it)
+            emptyList()
+        }
     }
 
     @Suppress("DEPRECATION") // The flags overload only exists from API 33.

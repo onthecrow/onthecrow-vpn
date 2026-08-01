@@ -1,5 +1,6 @@
 package com.onthecrow.onthecrowvpn.firebase
 
+import com.onthecrow.onthecrowvpn.errorreporting.CrashReporter
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 

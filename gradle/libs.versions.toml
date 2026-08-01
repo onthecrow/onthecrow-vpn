@@ -56,6 +56,8 @@ firebase-crashlytics = { module = "com.google.firebase:firebase-crashlytics" }
 firebase-firestore = { module = "com.google.firebase:firebase-firestore" }
 firebase-kotlin-app = { module = "dev.gitlive:firebase-app", version.ref = "firebaseKotlin" }
 firebase-kotlin-firestore = { module = "dev.gitlive:firebase-firestore", version.ref = "firebaseKotlin" }
+firebase-kotlin-crashlytics = { module = "dev.gitlive:firebase-crashlytics", version.ref = "firebaseKotlin" }
+firebase-kotlin-analytics = { module = "dev.gitlive:firebase-analytics", version.ref = "firebaseKotlin" }
 koin-bom = { module = "io.insert-koin:koin-bom", version.ref = "koin-bom" }
 koin-core = { module = "io.insert-koin:koin-core" }
 koin-android = { module = "io.insert-koin:koin-android" }

@@ -1,12 +1,17 @@
 package com.onthecrow.onthecrowvpn.xray
 
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import java.io.File
 
-actual class PlatformXrayEngine : XrayEngine {
+actual class PlatformXrayEngine : XrayEngine, KoinComponent {
     private val summarizer = XrayConfigSummarizer()
     private val sanitizer = XrayConfigSanitizer()
+    private val errorReporter: ErrorReporter by inject()
 
     override suspend fun validate(rawConfig: String): XrayValidationResult = withContext(Dispatchers.IO) {
         val trimmed = rawConfig.trim()
@@ -65,6 +70,7 @@ actual class PlatformXrayEngine : XrayEngine {
                 ConverterResult.Ok(stdout)
             }
         }.getOrElse { error ->
+            errorReporter.report(ErrorDomain.XRAY_ENGINE, error)
             ConverterResult.Error(error.message ?: "Converter failed")
         }
     }

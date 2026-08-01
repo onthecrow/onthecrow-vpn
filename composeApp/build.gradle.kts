@@ -38,6 +38,8 @@ kotlin {
             implementation(libs.koin.android)
         }
         commonMain.dependencies {
+            implementation(projects.core.analytics)
+            implementation(projects.core.errorReporting)
             implementation(projects.core.coroutines)
             implementation(projects.core.datastore)
             api(projects.core.firebase)

@@ -39,6 +39,9 @@ kotlin {
         commonMain.dependencies {
             implementation(projects.core.xray)
             implementation(libs.kotlinx.serialization.json)
+            // Crashlytics-ONLY reporting surface for the NE. Binds Firebase Crashlytics without the
+            // Firestore/gRPC graph, so the appex stays slim. Transitively exposes ErrorReporter/ErrorDomain.
+            implementation(projects.core.firebaseCrashlytics)
         }
     }
 }

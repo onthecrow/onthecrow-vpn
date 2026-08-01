@@ -3,13 +3,18 @@ package com.onthecrow.onthecrowvpn.vpn
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.xray.OtcLog
 import kotlinx.coroutines.flow.StateFlow
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 
 private const val LOG_TAG = "CTRL"
 
-actual class PlatformVpnController : VpnController {
+actual class PlatformVpnController : VpnController, KoinComponent {
     override val status: StateFlow<ConnectionStatus> = AndroidVpnRuntime.status
+    private val errorReporter: ErrorReporter by inject()
 
     // No init block, and nothing to mirror: the service writes [AndroidVpnRuntime.status] directly,
     // because it now runs in this very process. The broadcast round trip that used to carry it — and
@@ -52,6 +57,7 @@ actual class PlatformVpnController : VpnController {
         }.getOrElse { error ->
             val message = error.message ?: "Failed to start VPN service"
             OtcLog.log(LOG_TAG, "connect: FAILED $message")
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, error)
             AndroidVpnRuntime.status.value = ConnectionStatus.Error(message)
             ConnectResult.Failed(message)
         }
@@ -71,6 +77,7 @@ actual class PlatformVpnController : VpnController {
             )
         }.onFailure { error ->
             OtcLog.log(LOG_TAG, "sendStop FAILED: ${error.message}")
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, error)
             AndroidVpnRuntime.status.value = ConnectionStatus.Error(
                 error.message ?: "Failed to stop VPN service",
             )

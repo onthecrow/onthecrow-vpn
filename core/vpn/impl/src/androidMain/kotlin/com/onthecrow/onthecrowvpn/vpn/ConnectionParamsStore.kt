@@ -1,6 +1,8 @@
 package com.onthecrow.onthecrowvpn.vpn
 
 import android.content.Context
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.xray.OtcLog
 import java.io.File
 
@@ -13,18 +15,27 @@ import java.io.File
  * survives process death. Written on every user CONNECT, cleared on a deliberate DISCONNECT/REVOKE and
  * on a fatal failure (so we never crash-restore-crash in a loop).
  */
-internal class ConnectionParamsStore(context: Context) {
+internal class ConnectionParamsStore(
+    context: Context,
+    // Nullable so the callers that don't hold one (e.g. BootRestoreReceiver) keep working; the
+    // main-process owner (the service) passes the injected reporter.
+    private val errorReporter: ErrorReporter? = null,
+) {
     private val file = File(context.filesDir, FILE_NAME)
 
     fun save(params: ConnectionParams) {
         runCatching { file.writeText(encodeConnectionParams(params)) }
-            .onFailure { OtcLog.log(TAG, "params save failed: ${it.message}") }
+            .onFailure {
+                OtcLog.log(TAG, "params save failed: ${it.message}")
+                errorReporter?.report(ErrorDomain.DATASTORE, it)
+            }
     }
 
     fun load(): ConnectionParams? = runCatching {
         if (!file.exists()) null else decodeConnectionParams(file.readText())
     }.getOrElse {
         OtcLog.log(TAG, "params load failed: ${it.message}")
+        errorReporter?.report(ErrorDomain.DATASTORE, it)
         null
     }
 

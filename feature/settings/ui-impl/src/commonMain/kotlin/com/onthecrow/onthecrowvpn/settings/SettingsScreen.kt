@@ -95,7 +95,7 @@ internal fun SettingsScreen(
 
             // Pushes the version to the bottom of whatever space is left.
             Spacer(Modifier.weight(1f))
-            VersionFooter()
+            VersionFooter(onLogShared = { onEvent(SettingsEvent.OnLogShared) })
         }
     }
 }
@@ -108,7 +108,7 @@ internal fun SettingsScreen(
  * share sheet is the only way the log ever leaves the device.
  */
 @Composable
-private fun VersionFooter() {
+private fun VersionFooter(onLogShared: () -> Unit) {
     val version = appVersionLabel()
     if (version.isEmpty()) return
     val shareLogs = rememberLogSharer()
@@ -122,7 +122,10 @@ private fun VersionFooter() {
                 } else {
                     Modifier.combinedClickable(
                         onClick = {},
-                        onLongClick = shareLogs,
+                        onLongClick = {
+                            onLogShared()
+                            shareLogs()
+                        },
                     )
                 },
             )

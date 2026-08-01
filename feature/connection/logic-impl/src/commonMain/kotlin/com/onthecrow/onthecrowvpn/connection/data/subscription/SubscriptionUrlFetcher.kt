@@ -1,6 +1,8 @@
 package com.onthecrow.onthecrowvpn.connection.data.subscription
 
 import com.onthecrow.onthecrowvpn.connection.model.RemoteConfig
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.xray.XrayConfigSummarizer
 import com.onthecrow.onthecrowvpn.xray.XrayEngine
 import com.onthecrow.onthecrowvpn.xray.XrayValidationResult
@@ -25,27 +27,40 @@ internal class SubscriptionUrlFetcher(
     private val httpClient: HttpClient,
     private val xrayEngine: XrayEngine,
     private val summarizer: XrayConfigSummarizer,
+    private val errorReporter: ErrorReporter,
 ) {
+    /** Bounded failure category, so callers can report a privacy-safe reason without parsing the message. */
+    enum class FetchFailure { NETWORK, HTTP, BODY_READ, TOO_LARGE, NO_CONFIGS, NO_VALID_CONFIGS }
+
     sealed interface FetchResult {
         data class Success(val title: String?, val configs: List<RemoteConfig>) : FetchResult
-        data class Failure(val message: String) : FetchResult
+        data class Failure(val message: String, val reason: FetchFailure) : FetchResult
     }
 
     suspend fun fetch(url: String): FetchResult {
         val response = runCatching { httpClient.get(url) }
-            .getOrElse { return FetchResult.Failure(it.message ?: "Network error") }
+            .getOrElse {
+                errorReporter.report(ErrorDomain.SUBSCRIPTION_FETCH, it)
+                return FetchResult.Failure(it.message ?: "Network error", FetchFailure.NETWORK)
+            }
         if (!response.status.isSuccess()) {
-            return FetchResult.Failure("Subscription URL returned HTTP ${response.status.value}")
+            return FetchResult.Failure(
+                "Subscription URL returned HTTP ${response.status.value}",
+                FetchFailure.HTTP,
+            )
         }
         val body = runCatching { response.bodyAsText() }
-            .getOrElse { return FetchResult.Failure("Failed to read subscription response") }
+            .getOrElse {
+                errorReporter.report(ErrorDomain.SUBSCRIPTION_FETCH, it)
+                return FetchResult.Failure("Failed to read subscription response", FetchFailure.BODY_READ)
+            }
         if (body.length > MAX_BODY_CHARS) {
-            return FetchResult.Failure("Subscription response is too large")
+            return FetchResult.Failure("Subscription response is too large", FetchFailure.TOO_LARGE)
         }
 
         val links = SubscriptionPayloadParser.parseLinks(body)
         if (links.isEmpty()) {
-            return FetchResult.Failure("No configs found at this URL")
+            return FetchResult.Failure("No configs found at this URL", FetchFailure.NO_CONFIGS)
         }
 
         val validLinks = when (xrayEngine.validate(body.trim())) {
@@ -55,7 +70,7 @@ internal class SubscriptionUrlFetcher(
                 links.filter { xrayEngine.validate(it) is XrayValidationResult.Valid }
         }
         if (validLinks.isEmpty()) {
-            return FetchResult.Failure("No valid configs at this URL")
+            return FetchResult.Failure("No valid configs at this URL", FetchFailure.NO_VALID_CONFIGS)
         }
 
         val title = SubscriptionPayloadParser.decodeProfileTitle(response.headers["profile-title"])

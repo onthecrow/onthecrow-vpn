@@ -86,6 +86,11 @@ kotlin {
         }
     }
 
+    // macOS uses the GitLive KMP Firebase SDK (real Crashlytics; Analytics best-effort — Firebase does
+    // not officially support Analytics on macOS). Kept OFF the iOS cinterop path above: iOS binds the
+    // xcframeworks directly, macOS binds through GitLive, and the two never share a source set.
+    macosArm64()
+
     jvm()
 
     sourceSets {
@@ -94,6 +99,10 @@ kotlin {
             implementation(libs.koin.core)
             implementation(libs.kotlinx.coroutines.core)
             implementation(projects.feature.connection.logicApi)
+            // The `CrashReporter` port lives in core:error-reporting (the reporting abstraction). This
+            // module supplies the FULL Firebase binding of it (Analytics + Crashlytics + Firestore) for
+            // the app process; the iOS NE gets a Crashlytics-only binding from core:firebase-crashlytics.
+            implementation(projects.core.errorReporting)
         }
         androidMain.dependencies {
             implementation(project.dependencies.platform(libs.firebase.bom))
@@ -105,6 +114,11 @@ kotlin {
             implementation(libs.firebase.kotlin.app)
             implementation(libs.firebase.kotlin.firestore)
             implementation(libs.kotlinx.serialization.json)
+        }
+        macosMain.dependencies {
+            implementation(libs.firebase.kotlin.app)
+            implementation(libs.firebase.kotlin.crashlytics)
+            implementation(libs.firebase.kotlin.analytics)
         }
     }
 }

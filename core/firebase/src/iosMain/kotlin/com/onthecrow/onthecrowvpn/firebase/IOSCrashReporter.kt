@@ -1,6 +1,6 @@
 package com.onthecrow.onthecrowvpn.firebase.di
 
-import com.onthecrow.onthecrowvpn.firebase.CrashReporter
+import com.onthecrow.onthecrowvpn.errorreporting.CrashReporter
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.Firebase.FIRApp
 import platform.Firebase.FIRCrashlytics

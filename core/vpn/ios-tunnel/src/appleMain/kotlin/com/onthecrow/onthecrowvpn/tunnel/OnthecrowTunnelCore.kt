@@ -1,5 +1,8 @@
 package com.onthecrow.onthecrowvpn.tunnel
 
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
+import com.onthecrow.onthecrowvpn.firebase.crashlytics.NeCrashReporting
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.allocArray
@@ -53,17 +56,25 @@ class OnthecrowTunnelCore(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    // Crashlytics-only reporter for this extension process (no Koin here). Constructing it is cheap and
+    // side-effect-free; it stays a no-op until [NeCrashReporting.configure] runs and Crashlytics is set up.
+    private val errorReporter: ErrorReporter = NeCrashReporting.errorReporter()
+
     fun startTunnel(
         options: Map<Any?, *>?,
         completionHandler: (NSError?) -> Unit,
     ) {
         log("startTunnel: begin")
+        // Bootstrap the extension's own Firebase (separate process from the app). Best-effort: no-ops if
+        // GoogleService-Info.plist isn't embedded in the appex bundle.
+        NeCrashReporting.configure()
         // Clear any error from a previous attempt so the app only ever reads a fresh one.
         clearSharedError()
         val proto = provider.protocolConfiguration as? NETunnelProviderProtocol
         val xrayJson = proto?.providerConfiguration?.get("xrayJson") as? String
         if (xrayJson.isNullOrBlank()) {
             log("startTunnel: missing config")
+            errorReporter.report(ErrorDomain.CONFIG_VALIDATION, NeTunnelException("missing-config"))
             completionHandler(fail(1, "Missing VPN configuration"))
             return
         }
@@ -84,6 +95,7 @@ class OnthecrowTunnelCore(
         provider.setTunnelNetworkSettings(settings) { settingsError ->
             if (settingsError != null) {
                 log("startTunnel: settings error: ${settingsError.localizedDescription}")
+                errorReporter.report(ErrorDomain.VPN_TUNNEL, NeTunnelException("settings-apply"))
                 reportFailure(settingsError.localizedDescription ?: "Failed to apply tunnel network settings")
                 completionHandler(settingsError)
                 return@setTunnelNetworkSettings
@@ -91,6 +103,7 @@ class OnthecrowTunnelCore(
             val fd = findUtunFd()
             log("startTunnel: utun fd=$fd")
             if (fd < 0) {
+                errorReporter.report(ErrorDomain.VPN_TUNNEL, NeTunnelException("utun-missing"))
                 completionHandler(fail(2, "Could not locate the tunnel descriptor (utun)"))
                 return@setTunnelNetworkSettings
             }
@@ -102,6 +115,7 @@ class OnthecrowTunnelCore(
             val error = libXrayError(response)
             if (error != null) {
                 log("startTunnel: xray error: $error")
+                errorReporter.report(ErrorDomain.XRAY_ENGINE, NeTunnelException("xray-start"))
                 completionHandler(fail(3, "Xray core failed to start: $error"))
             } else {
                 log("startTunnel: connected")
@@ -235,6 +249,14 @@ class OnthecrowTunnelCore(
     private fun clearSharedError() {
         runCatching { NSUserDefaults(suiteName = APP_GROUP_ID)?.removeObjectForKey(ERROR_KEY) }
     }
+
+    /**
+     * A fixed, non-secret marker exception for NE crash reports. [ErrorReporter] drops the message before
+     * upload (keeping only the type + [ErrorDomain]), so [marker] is just local readability — and is
+     * deliberately NOT built from libXray's error string or a tunnel-settings description, either of
+     * which can embed a server host/credential that must never be uploaded.
+     */
+    private class NeTunnelException(marker: String) : Exception(marker)
 
     private companion object {
         private const val APP_GROUP_ID = "group.com.onthecrow.onthecrowvpn"

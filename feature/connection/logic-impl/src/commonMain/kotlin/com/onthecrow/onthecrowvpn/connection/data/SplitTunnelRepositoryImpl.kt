@@ -4,6 +4,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
 import com.onthecrow.onthecrowvpn.vpn.domain.SplitTunnelRepository
 import com.onthecrow.onthecrowvpn.vpn.model.SplitTunnelSettings
 import kotlinx.coroutines.flow.Flow
@@ -19,6 +21,7 @@ import kotlinx.serialization.json.Json
 internal class SplitTunnelRepositoryImpl(
     private val dataStore: DataStore<Preferences>,
     private val json: Json,
+    private val errorReporter: ErrorReporter,
 ) : SplitTunnelRepository {
     private val writeMutex = Mutex()
 
@@ -38,7 +41,11 @@ internal class SplitTunnelRepositoryImpl(
     private fun decode(raw: String?): SplitTunnelSettings {
         if (raw.isNullOrBlank()) return SplitTunnelSettings()
         return runCatching { json.decodeFromString(SplitTunnelSettings.serializer(), raw) }
-            .getOrElse { SplitTunnelSettings() }
+            .getOrElse {
+                // Persisted routing failed to parse — split-tunnel silently resets to defaults.
+                errorReporter.report(ErrorDomain.DATASTORE, it)
+                SplitTunnelSettings()
+            }
     }
 
     private companion object {

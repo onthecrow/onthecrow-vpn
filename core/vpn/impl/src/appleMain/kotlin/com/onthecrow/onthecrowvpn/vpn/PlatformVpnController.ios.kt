@@ -9,6 +9,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorDomain
+import com.onthecrow.onthecrowvpn.errorreporting.ErrorReporter
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
 import platform.Foundation.NSBundle
 import platform.NetworkExtension.NEVPNStatus
 import platform.NetworkExtension.NEVPNStatusConnected
@@ -32,9 +36,10 @@ import platform.NetworkExtension.NEVPNStatusReasserting
  * poller, and turning a failed connection attempt into an informative Error.
  */
 @OptIn(ExperimentalForeignApi::class)
-actual class PlatformVpnController : VpnController {
+actual class PlatformVpnController : VpnController, KoinComponent {
     private val mutableStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     override val status: StateFlow<ConnectionStatus> = mutableStatus
+    private val errorReporter: ErrorReporter by inject()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val tunnel = AppleTunnelManager(providerBundleId = extensionBundleId())
@@ -97,6 +102,7 @@ actual class PlatformVpnController : VpnController {
             }
         } catch (t: Throwable) {
             pendingConnect = false
+            errorReporter.report(ErrorDomain.VPN_TUNNEL, t)
             val message = t.message ?: "Failed to start VPN"
             mutableStatus.value = tunnel.currentStatus()?.let { mapStatus(it) }
                 ?: ConnectionStatus.Error(message)
