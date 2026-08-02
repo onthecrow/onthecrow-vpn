@@ -1,5 +1,5 @@
 <#
-  Builds the OnthecrowVPN Windows installer (.exe).
+  Builds the DeltaVPN Windows installer (.exe).
 
   Two stages:
     1) Compose Desktop / jpackage -> a self-contained app-image (bundled JRE + VPN engine + Firebase config).
@@ -47,8 +47,8 @@ $env:JAVA_HOME = $jdkHome
 & "$repo\gradlew.bat" :desktopApp:createDistributable --console=plain
 if ($LASTEXITCODE -ne 0) { throw "createDistributable failed ($LASTEXITCODE)" }
 
-$appDir = Join-Path $repo 'desktopApp\build\compose\binaries\main\app\OnthecrowVPN'
-if (-not (Test-Path (Join-Path $appDir 'OnthecrowVPN.exe'))) { throw "app-image not found at $appDir" }
+$appDir = Join-Path $repo 'desktopApp\build\compose\binaries\main\app\DeltaVPN'
+if (-not (Test-Path (Join-Path $appDir 'DeltaVPN.exe'))) { throw "app-image not found at $appDir" }
 $outDir = Join-Path $repo 'desktopApp\build\installer'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 

@@ -1,3 +1,0 @@
-package com.onthecrow.onthecrowvpn.firebase
-
-interface FirebasePlatformContext

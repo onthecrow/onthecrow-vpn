@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Builds + signs OnthecrowVpnService.app — a faceless (LSUIElement) .app wrapping the native NE
+# Builds + signs DeltaVpnService.app — a faceless (LSUIElement) .app wrapping the native NE
 # bridge, signed Developer ID with an embedded provisioning profile so the restricted
 # NetworkExtension entitlement is honored (a bare binary can't carry it — AMFI -413).
 #
 # Prereq: an "Onthecrow Host DevID" Developer ID provisioning profile for App ID
-#   com.onthecrow.onthecrowvpn that includes the Network Extensions capability (download + double
+#   com.onthecrow.deltavpn that includes the Network Extensions capability (download + double
 #   click to install it after enabling Network Extensions on that App ID in the portal).
 #
 # Usage:  scripts/build-macos-service-app.sh [path/to/profile.provisionprofile]
@@ -17,8 +17,8 @@ BRIDGE="$ROOT/core/vpn/macos-bridge/build/bin/macosArm64/releaseExecutable/onthe
 ENTITLEMENTS="$ROOT/macosApp/macos-bridge.entitlements"
 # codesign matches this as a prefix of your cert's common name; override via env if you have several.
 IDENTITY="${ONTHECROW_SIGN_IDENTITY:-Developer ID Application}"
-APP="$ROOT/build/macos/OnthecrowVpnService.app"
-BUNDLE_ID="com.onthecrow.onthecrowvpn"
+APP="$ROOT/build/macos/DeltaVpnService.app"
+BUNDLE_ID="com.onthecrow.deltavpn"
 
 [ -x "$BRIDGE" ] || { echo "bridge not built: $BRIDGE" >&2; exit 1; }
 
@@ -64,8 +64,8 @@ cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
 SYSEXT=""
 for cand in \
   "${ONTHECROW_SYSEXT_SRC:-}" \
-  "/Applications/OnthecrowVpnService.app/Contents/Library/SystemExtensions" \
-  "/Applications/OnthecrowSysextHost.app/Contents/Library/SystemExtensions" \
+  "/Applications/DeltaVpnService.app/Contents/Library/SystemExtensions" \
+  "/Applications/DeltaSysextHost.app/Contents/Library/SystemExtensions" \
   "$APP/Contents/Library/SystemExtensions"; do
   [ -n "$cand" ] || continue
   found="$(find "$cand" -maxdepth 1 -name '*.systemextension' -type d 2>/dev/null | head -1)"
@@ -82,7 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
-    <key>CFBundleName</key><string>OnthecrowVpnService</string>
+    <key>CFBundleName</key><string>DeltaVpnService</string>
     <key>CFBundleExecutable</key><string>onthecrow-macos-bridge</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>

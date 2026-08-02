@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">OnthecrowVPN</string>
+    <string name="app_name">Delta VPN</string>
     <!-- Quick Settings tile subtitle states. -->
     <string name="tile_connecting">Connecting…</string>
     <string name="tile_disconnecting">Disconnecting…</string>

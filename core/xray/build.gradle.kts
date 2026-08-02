@@ -8,7 +8,7 @@ plugins {
 
 kotlin {
     androidLibrary {
-        namespace = "com.onthecrow.onthecrowvpn.xray"
+        namespace = "com.onthecrow.deltavpn.xray"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
     }
@@ -64,7 +64,7 @@ kotlin {
         // Error reporting is wired on android (RemoteXrayEngine) and jvm/desktop (PlatformXrayEngine.jvm)
         // ONLY — deliberately NOT commonMain. core:error-reporting is now Firebase-free (it owns the
         // CrashReporter port), so this is no longer about a Firebase leak: the iOS xray path simply does
-        // not report (the NE reports from OnthecrowTunnelCore via core:firebase-crashlytics, the
+        // not report (the NE reports from DeltaTunnelCore via core:firebase-crashlytics, the
         // Crashlytics-only surface). Keeping it per-target avoids adding an unused reporter to the appex,
         // and — critically — never let core:firebase reach an APPLE consumer of core:xray: in commonMain a
         // firebase-backed reporter would drag Firestore/gRPC into the NE appex. The `:xray` android

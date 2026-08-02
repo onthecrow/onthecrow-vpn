@@ -5,7 +5,7 @@ plugins {
 
 kotlin {
     androidLibrary {
-        namespace = "com.onthecrow.onthecrowvpn.uicore"
+        namespace = "com.onthecrow.deltavpn.uicore"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
     }

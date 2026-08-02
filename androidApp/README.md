@@ -1,7 +1,7 @@
 # androidApp (Android VPN — VpnService)
 
 The Android client: the shared **Compose Multiplatform UI** plus a `VpnService`
-(`OnthecrowVpnService`) that runs our vless/hysteria2 xray tunnel via the **libXray** Android AAR.
+(`DeltaVpnService`) that runs our vless/hysteria2 xray tunnel via the **libXray** Android AAR.
 
 Unlike iOS/macOS (NetworkExtension), Android uses the standard **`VpnService`** API: the app owns the
 tun interface directly (a file descriptor) and hands it to xray-core. No system extension, no Apple
@@ -18,7 +18,7 @@ Compose UI (composeApp, Android)
 PlatformVpnController.android.kt ── startForegroundService(ACTION_CONNECT, xrayJson)
    │                                 (permission first via AndroidVpnPermissionBridge → VpnService.prepare)
    ▼
-OnthecrowVpnService (android.net.VpnService)
+DeltaVpnService (android.net.VpnService)
    • Builder: addr 10.77.0.2/32, route 0.0.0.0/0, DNS 1.1.1.1, MTU 1500,
      addDisallowedApplication(self) → establish() → ParcelFileDescriptor
    • detachFd() → PlatformXrayEngine.setTunFd(fd)
@@ -33,7 +33,7 @@ PlatformXrayEngine.android ── reflection into libXray.LibXray (LibXray.aar)
 libXray (xray-core) ── tun inbound reads/writes the fd ── hysteria2/vless → server → internet
 ```
 
-**One-liner:** Compose → `PlatformVpnController.android` → `OnthecrowVpnService` builds the tun fd →
+**One-liner:** Compose → `PlatformVpnController.android` → `DeltaVpnService` builds the tun fd →
 `PlatformXrayEngine` hands it to **libXray (xray-core)** via reflection → traffic, with the server
 socket `protect()`-ed so it bypasses the tunnel.
 
@@ -43,8 +43,8 @@ socket `protect()`-ed so it bypasses the tunnel.
 
 | Component | Path | Role |
 |---|---|---|
-| Android VPN controller | `core/vpn/impl/src/androidMain/.../PlatformVpnController.android.kt` | Starts/stops `OnthecrowVpnService` via intents; status from `AndroidVpnRuntime`. |
-| **VpnService** | `core/vpn/impl/src/androidMain/.../OnthecrowVpnService.kt` | Builds the tun interface, drives xray, foreground service + notification, **network-change resilience** (refresh xray when the underlying network switches), `onRevoke`. |
+| Android VPN controller | `core/vpn/impl/src/androidMain/.../PlatformVpnController.android.kt` | Starts/stops `DeltaVpnService` via intents; status from `AndroidVpnRuntime`. |
+| **VpnService** | `core/vpn/impl/src/androidMain/.../DeltaVpnService.kt` | Builds the tun interface, drives xray, foreground service + notification, **network-change resilience** (refresh xray when the underlying network switches), `onRevoke`. |
 | Permission bridge | `…/AndroidVpnPermissionBridge.kt` (+ `PlatformVpnPermissionRequester.android.kt`) | `VpnService.prepare()` → activity result via a launcher bound in `MainActivity`. |
 | Status holder / env | `…/AndroidVpnRuntime.kt`, `…/AndroidVpnEnvironment.kt` | `StateFlow<ConnectionStatus>`; app `Context` holder. |
 | **xray engine** | `core/xray/src/androidMain/.../PlatformXrayEngine.android.kt` | Reflection bridge into `libXray.LibXray` (AAR); `protectFd` via a `DialerController` `Proxy`. |
@@ -110,9 +110,9 @@ AAR is bundled into the app. (GoLog is silenced in release builds.)
 
 ## 5. Debugging
 
-- **Service logs** (debug builds only — gated by `isDebuggable`, tag `OnthecrowVpn`):
+- **Service logs** (debug builds only — gated by `isDebuggable`, tag `DeltaVpn`):
   ```bash
-  adb logcat -s OnthecrowVpn:*
+  adb logcat -s DeltaVpn:*
   ```
   Shows connect/refresh lifecycle, underlying-network transitions (`underlying changed: … -> …`),
   restart begin/success/failure, and teardown reasons.

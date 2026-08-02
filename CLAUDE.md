@@ -1,4 +1,4 @@
-# OnthecrowVPN
+# DeltaVPN
 
 Kotlin Multiplatform / Compose Multiplatform VPN client (Android, iOS/macOS via NetworkExtension,
 desktop JVM, Windows). Outbound is hysteria2 over QUIC via libXray (xray-core). Purpose: bypassing
@@ -46,7 +46,7 @@ live in [`docs/analytics-events.md`](docs/analytics-events.md).
 counts/durations ONLY — never a server address/port, credential, config URL, destination,
 subscription/bundle id, split-tunnel package, or any raw count/timestamp/message. The typed API enforces
 this (no free-form `String` params). Never call `AnalyticsManager` from the `:xray` process (Firebase is
-only initialised in the main process). The 8 `vpn_*` service events fire from `OnthecrowVpnService`
+only initialised in the main process). The 8 `vpn_*` service events fire from `DeltaVpnService`
 (a `KoinComponent` for this) — keep their `RecoveryTrigger`/`RecoveryOutcome`/`EngineDeathReason`/`ConnectVia`
 enums consistent with the recovery ladder in `.claude/vpn-service.md`.
 

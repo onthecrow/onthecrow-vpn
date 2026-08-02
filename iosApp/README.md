@@ -28,14 +28,14 @@ The iOS client: a SwiftUI shell hosting the **shared Compose Multiplatform UI**,
                 ▼
    PacketTunnel.appex  (iosApp/PacketTunnel/, embedded in the app)
         • PacketTunnelProvider.swift  ── ~15-line Swift principal class ──┐
-        • OnthecrowTunnelCore (Kotlin/Native, SHARED WITH macOS)  ◄───────┘
+        • DeltaTunnelCore (Kotlin/Native, SHARED WITH macOS)  ◄───────┘
              • NEPacketTunnelNetworkSettings, utun fd, LibXraySetTunFd + LibXrayRunXrayFromJSON
              ▼
         libXray (xray-core) → hysteria2/vless → server → internet
 ```
 
 **One-liner:** SwiftUI → Compose (KMP) → `PlatformVpnController.ios` (`NETunnelProviderManager`) → iOS
-launches the **PacketTunnel app extension** → Swift principal class → shared `OnthecrowTunnelCore` →
+launches the **PacketTunnel app extension** → Swift principal class → shared `DeltaTunnelCore` →
 **libXray** → utun → traffic.
 
 ---
@@ -48,15 +48,15 @@ launches the **PacketTunnel app extension** → Swift principal class → shared
 | Compose entry | `composeApp/src/iosMain/.../MainViewController.kt` | `ComposeUIViewController { AppInitializer.initialize(IOSPlatform()); App() }`. |
 | iOS VPN controller | `core/vpn/impl/src/appleMain/.../PlatformVpnController.ios.kt` | `NETunnelProviderManager` mgmt + **status polling** of `NEVPNConnection.status` (notification callbacks proved unreliable in KN); turns a failed attempt into an informative `Error` via the App-Group store. |
 | **Shared NE management** | `core/vpn/impl/src/appleMain/.../AppleTunnelManager.kt` | Create/save/start/stop + status map, **shared with the macOS bridge**. |
-| Extension principal class | `iosApp/PacketTunnel/PacketTunnelProvider.swift` | ~15 lines; forwards `start/stopTunnel` to `OnthecrowTunnelCore`. |
-| **Tunnel core** | `core/vpn/ios-tunnel/src/appleMain/.../OnthecrowTunnelCore.kt` | The actual tunnel: network settings, utun-fd scan, `LibXraySetTunFd` + `LibXrayRunXrayFromJSON`, App-Group error reporting. **Shared with macOS.** |
+| Extension principal class | `iosApp/PacketTunnel/PacketTunnelProvider.swift` | ~15 lines; forwards `start/stopTunnel` to `DeltaTunnelCore`. |
+| **Tunnel core** | `core/vpn/ios-tunnel/src/appleMain/.../DeltaTunnelCore.kt` | The actual tunnel: network settings, utun-fd scan, `LibXraySetTunFd` + `LibXrayRunXrayFromJSON`, App-Group error reporting. **Shared with macOS.** |
 | Share-link convert/validate | `core/xray/src/appleMain/.../PlatformXrayEngine.ios.kt` | `ConvertShareLinksToXrayJson` / `TestXray` via the libXray cinterop. |
 | Config sanitizer | `core/xray/src/commonMain/.../XrayConfigSanitizer.kt` | tun inbound, strip non-IP `sendThrough`, log level. |
 
 ### Why a Swift principal class (the only Swift)
 NetworkExtension resolves `NSExtensionPrincipalClass` via `NSClassFromString` **at extension launch,
 before the KN runtime initializes**, so a Kotlin/Native subclass of `NEPacketTunnelProvider` is never
-found. A Swift class is registered at image load; it forwards everything to `OnthecrowTunnelCore`. (KN
+found. A Swift class is registered at image load; it forwards everything to `DeltaTunnelCore`. (KN
 also can't safely call variadic `NSLog`, so logging is routed through a Swift closure.)
 
 ---
@@ -77,14 +77,14 @@ Prerequisites: **Xcode**, an Apple Developer account (a free personal team works
 and a **physical device** — NetworkExtension does **not** run in the iOS Simulator.
 
 ### 4.1 Identifiers / signing
-- `iosApp/Configuration/Config.xcconfig`: `TEAM_ID=Q468Q9633Q`, `PRODUCT_NAME=OnthecrowVPN`.
-- App bundle id `com.onthecrow.onthecrowvpn.OnthecrowVPN` (`.dev` for Debug); extension is the child
-  id `…OnthecrowVPN.PacketTunnel`.
+- `iosApp/Configuration/Config.xcconfig`: `TEAM_ID=Q468Q9633Q`, `PRODUCT_NAME=DeltaVPN`.
+- App bundle id `com.onthecrow.deltavpn.DeltaVPN` (`.dev` for Debug); extension is the child
+  id `…DeltaVPN.PacketTunnel`.
 - Both the app and the extension carry (`iosApp/iosApp/iosApp.entitlements`,
   `iosApp/PacketTunnel/PacketTunnel.entitlements`):
   - `com.apple.developer.networking.networkextension = [packet-tunnel-provider]` (the iOS
     **app-extension** value — note: **no** `-systemextension` suffix, unlike macOS),
-  - `com.apple.security.application-groups = [group.com.onthecrow.onthecrowvpn]`.
+  - `com.apple.security.application-groups = [group.com.onthecrow.deltavpn]`.
 - **App IDs** in the portal: enable **Network Extensions** + **App Groups** on both the app id and the
   `…PacketTunnel` id; create the App Group. Unlike macOS, **automatic signing works** for the iOS NE
   app-extension entitlement.
@@ -99,7 +99,7 @@ and a **physical device** — NetworkExtension does **not** run in the iOS Simul
 - App target Run Script: `./gradlew :composeApp:embedAndSignAppleFrameworkForXcode` (builds the
   Compose UI framework).
 - Extension target Run Script: `./gradlew :core:vpn:ios-tunnel:embedAndSignAppleFrameworkForXcode`
-  (builds the `OnthecrowTunnel` framework).
+  (builds the `DeltaTunnel` framework).
 - Both link `LibXray.xcframework`; `OTHER_LDFLAGS = -ObjC -lc++`; `ENABLE_USER_SCRIPT_SANDBOXING = NO`.
 - `PacketTunnel/Info.plist`: `NSExtensionPointIdentifier = com.apple.networkextension.packet-tunnel`,
   `NSExtensionPrincipalClass = $(PRODUCT_MODULE_NAME).PacketTunnelProvider`.
@@ -121,17 +121,17 @@ Distribute). No notarization (that's a macOS Developer-ID concept).
 ## 5. Debugging
 
 - **Run on a physical device** — NE is unavailable in the Simulator.
-- **Extension logs**: Console.app (filter by the device + `PacketTunnel` / `OnthecrowTunnel`), or
-  attach Xcode to the extension. `OnthecrowTunnelCore` logs each step (`startTunnel: begin`,
+- **Extension logs**: Console.app (filter by the device + `PacketTunnel` / `DeltaTunnel`), or
+  attach Xcode to the extension. `DeltaTunnelCore` logs each step (`startTunnel: begin`,
   `utun fd=…`, `xray error: …`) through the Swift `NSLog` closure (DEBUG builds).
 - **Failure reason in the app**: the extension writes the human-readable reason to the shared App
-  Group (`NSUserDefaults(suiteName: "group.com.onthecrow.onthecrowvpn")`, key `lastTunnelError`);
+  Group (`NSUserDefaults(suiteName: "group.com.onthecrow.deltavpn")`, key `lastTunnelError`);
   `PlatformVpnController.ios` reads it when a connect attempt drops back to disconnected and surfaces
   it in the snackbar.
 - **Status desync**: status is **polled** (`POLL_INTERVAL_MS = 500`) from the live `NEVPNConnection`,
   and reconciled at launch — the button reflects the real system state (including toggles from
   Settings) within a tick.
-- **`tunnelRemoteAddress`** must be an IP literal; for domain servers `OnthecrowTunnelCore` uses a
+- **`tunnelRemoteAddress`** must be an IP literal; for domain servers `DeltaTunnelCore` uses a
   placeholder (`192.0.2.1`) — xray still dials the real host from the config.
 - Signing issues building from Android Studio: the project is fine from Xcode/CLI; AS just needs the
   Apple ID account configured in Xcode.

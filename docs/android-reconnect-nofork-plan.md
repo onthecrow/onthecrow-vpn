@@ -7,11 +7,11 @@
 | Analysis claim | Actual state | Evidence |
 |---|---|---|
 | "`WAKE_LOCK` verified absent today" | **Present** | `androidApp/src/main/AndroidManifest.xml:13` |
-| Step 1 honest probe not written | **Written** | `OnthecrowVpnService.kt:517-547` — `connect()`s, asserts `localAddress == TUN_ADDRESS`, checks txid + QR bit |
+| Step 1 honest probe not written | **Written** | `DeltaVpnService.kt:517-547` — `connect()`s, asserts `localAddress == TUN_ADDRESS`, checks txid + QR bit |
 | `registerProtectControllers` not idempotent (D17, "blocking prerequisite") | **Fixed** | `PlatformXrayEngine.android.kt:180` — `if (!protectControllersRegistered.compareAndSet(false, true)) return` |
-| `ACTION_DEVICE_IDLE_MODE_CHANGED` receiver "new" | **Registered** | `OnthecrowVpnService.kt:633` |
-| `refreshUnderlyingFromSystem()` "deleted from tree" | **Restored** | `OnthecrowVpnService.kt:209, 628, 649` |
-| Capability / link-property triggers "new" | **Present** | `OnthecrowVpnService.kt:746` (`onCapabilitiesChanged`), `:756` (`onLinkPropertiesChanged`) |
+| `ACTION_DEVICE_IDLE_MODE_CHANGED` receiver "new" | **Registered** | `DeltaVpnService.kt:633` |
+| `refreshUnderlyingFromSystem()` "deleted from tree" | **Restored** | `DeltaVpnService.kt:209, 628, 649` |
+| Capability / link-property triggers "new" | **Present** | `DeltaVpnService.kt:746` (`onCapabilitiesChanged`), `:756` (`onLinkPropertiesChanged`) |
 | `FOREGROUND_SERVICE_SPECIAL_USE` (D18 open) | **Declared** | `AndroidManifest.xml:7`, subtype `vpn` at `:60-62` |
 
 The systems expert's two corrections to the analysis document are both confirmed. Do not re-do this work. What remains is genuinely: the pool-eviction replacement, `runRedial()`, the disconnect/recovery split, and the restart tier.
@@ -183,7 +183,7 @@ trigger  (validated-capability change | link-props change on current underlying
 
 | Item | State | Change # |
 |---|---|---|
-| Honest probe (`connect()` + `localAddress` assert + txid/QR) | **Done** — `OnthecrowVpnService.kt:517-547` | — |
+| Honest probe (`connect()` + `localAddress` assert + txid/QR) | **Done** — `DeltaVpnService.kt:517-547` | — |
 | Idempotent `registerProtectControllers` | **Done** — `PlatformXrayEngine.android.kt:180` | — |
 | Trigger set: validated-caps / link-props / idle-exit / screen-on / keepalive, screen-state-independent | **Mostly done**; remove the screen-off gate, keep keepalive loop running slowed | 6 |
 | Register network callback **once** per process, never unregister until `onDestroy` (100-request per-UID cap) | **To do** | 7 |
@@ -258,7 +258,7 @@ and, inside `<application>`:
 ### The restart call, exactly
 
 ```kotlin
-// core/vpn/impl/src/androidMain/.../OnthecrowVpnService.kt — T3 path only. ORDER IS LOAD-BEARING.
+// core/vpn/impl/src/androidMain/.../DeltaVpnService.kt — T3 path only. ORDER IS LOAD-BEARING.
 private fun restartProcessForRecovery(reason: String) {
     // 1. Persist FIRST. commit(), not apply() — this process is about to be SIGKILLed.
     paramsStore.save(ConnectionParams(activeXrayJson!!, activeDisallow, activeAllow))
@@ -270,7 +270,7 @@ private fun restartProcessForRecovery(reason: String) {
     logd("T3 restart: reason=$reason gen=$gen")
 
     // 2. Explicit component → lands directly in :vpn. FLAG_IMMUTABLE mandatory since Android 12.
-    val intent = Intent(this, OnthecrowVpnService::class.java)
+    val intent = Intent(this, DeltaVpnService::class.java)
         .setAction(ACTION_CONNECT)
         .putExtra(EXTRA_RESTART_REASON, reason)
     val pi = PendingIntent.getForegroundService(
@@ -300,7 +300,7 @@ private fun restartProcessForRecovery(reason: String) {
 **Four non-obvious requirements:**
 
 1. **`stopSelf()` before `killProcess`.** Without it AMS *also* schedules a `START_STICKY` restart that races the alarm for the same component, reintroducing the ×4 backoff escalation.
-2. **Return `START_NOT_STICKY`** from `onStartCommand` once this lands. It is `START_STICKY` today (`OnthecrowVpnService.kt:171`); with an alarm engine, sticky is pure liability. **Keep the `intent == null` self-heal branch** (`:157-170`) — it still fires on a genuine system kill and is free.
+2. **Return `START_NOT_STICKY`** from `onStartCommand` once this lands. It is `START_STICKY` today (`DeltaVpnService.kt:171`); with an alarm engine, sticky is pure liability. **Keep the `intent == null` self-heal branch** (`:157-170`) — it still fires on a genuine system kill and is free.
 3. **`RESTART_DELAY_MS = 500`, and do not shorten it.** Non-zero so the process actually dies first; if the alarm fires into a still-terminating process, AMS may deliver `onStartCommand` to a corpse and the restart is silently lost. **INFERRED — tune under stress test.** The trade is asymmetric: a lost restart is an *unbounded* leak, strictly worse than 500 ms of bounded leak. Do not optimise the wrong side.
 4. **A persisted restart-generation counter, `commit()`ed.** Enforces backoff *across process deaths* — otherwise each fresh process starts with a clean debounce and can hot-loop. Note `elapsedRealtime()` survives process death and resets at reboot, which is the correct semantic here (the existing `recordRecoveryKill` at `:453-457` already gets this right).
 
@@ -368,10 +368,10 @@ Strictly ordered. Change 1 ships alone, first — nothing after it is measurable
 
 ### Change 1 — Instrumentation (ship alone, one build)
 
-**Files:** `core/xray/src/androidMain/.../PlatformXrayEngine.android.kt` (`ProtectFdInvocationHandler.invoke`, `:221-240`); `core/vpn/impl/src/androidMain/.../OnthecrowVpnService.kt` (ladder + probe).
+**Files:** `core/xray/src/androidMain/.../PlatformXrayEngine.android.kt` (`ProtectFdInvocationHandler.invoke`, `:221-240`); `core/vpn/impl/src/androidMain/.../DeltaVpnService.kt` (ladder + probe).
 
 1. **`protectFd` counter.** In the invocation handler, increment a process-global `AtomicLong` and log `protectFd #<n> fd=<fd>`. This is the eviction oracle: **a recovery with no `protectFd` increment did not get a fresh upstream connection.**
-2. **Log the emitted `runtimeJson` once per process.** The `runtimeJsonLogged` flag already exists (`OnthecrowVpnService.kt:81-82`) — confirm it actually emits. Settles whether `streamSettings.finalmask` exists today (insert vs. merge for Change 2).
+2. **Log the emitted `runtimeJson` once per process.** The `runtimeJsonLogged` flag already exists (`DeltaVpnService.kt:81-82`) — confirm it actually emits. Settles whether `streamSettings.finalmask` exists today (insert vs. merge for Change 2).
 3. **Log ladder tier entry/exit with elapsed ms and the `protectFd` count at each boundary.**
 4. **Log `PowerManager.isIgnoringBatteryOptimizations` on every recovery.** It is load-bearing for three separate grants (exact-alarm eligibility, quota exemption, FGS start); a silent revocation changes the failure mode entirely and would otherwise be invisible.
 
@@ -383,7 +383,7 @@ Strictly ordered. Change 1 ships alone, first — nothing after it is measurable
 
 ### Change 2 — Lever A: `quicParams` into the emitted config
 
-**File:** `core/xray/src/commonMain/kotlin/com/onthecrow/onthecrowvpn/xray/XrayConfigSanitizer.kt`
+**File:** `core/xray/src/commonMain/kotlin/com/onthecrow/deltavpn/xray/XrayConfigSanitizer.kt`
 
 Inject `streamSettings.finalmask.quicParams: { maxIdleTimeout: 8, keepAlivePeriod: 3 }` into each hysteria outbound. **MERGE, never overwrite** — `share/hysteria_mask.go:12` only allocates `quicParams` when the share link carries bandwidth/ports, and clobbering it silently downgrades brutal congestion control to BBR. Merge at the `quicParams` object level: preserve every existing key, set only these two.
 
@@ -399,7 +399,7 @@ The sanitizer currently emits no `finalmask` at all (grep confirms), so this is 
 
 ### Change 3 — `runRedial()`: keep the tun
 
-**File:** `core/vpn/impl/src/androidMain/.../OnthecrowVpnService.kt`
+**File:** `core/vpn/impl/src/androidMain/.../DeltaVpnService.kt`
 
 1. Add `runRedial()` = `stopXray()` → `setTunFd(tunInterface.dup().detachFd())` → `xrayEngine.start(activeXrayJson)`. It **never** calls `stopTunnel()`. `runConnect` / `stopTunnel` remain for user connect, user disconnect, revoke and fatal failure only.
 2. **Do not close the dup'd fd** in `stopXray()` (`:333-338` currently does). `AndroidTun.Close()` is a verified no-op (`tun_android.go:47-49`) and `core.Instance.Close()` does not join the gVisor `fdbased` reader goroutines, while the logs show fd numbers recycling deterministically (`101/102/103`). Leak one fd per redial — bounded by recovery count, reclaimed at process death. A timed delay before closing is a race you cannot prove you won.
@@ -412,17 +412,17 @@ The sanitizer currently emits no `finalmask` at all (grep confirms), so this is 
 
 ### Change 4 — Recovery lives entirely in `:vpn`
 
-**Files:** `core/vpn/impl/src/androidMain/.../VpnStatusBroadcast.kt:45-59`; `core/vpn/impl/src/androidMain/.../PlatformVpnController.android.kt:47-77`; `OnthecrowVpnService.kt:439-448`.
+**Files:** `core/vpn/impl/src/androidMain/.../VpnStatusBroadcast.kt:45-59`; `core/vpn/impl/src/androidMain/.../PlatformVpnController.android.kt:47-77`; `DeltaVpnService.kt:439-448`.
 
 Delete `sendRecoverRequest` / `registerRecoverRequest` and `onRecoverRequested` / `reconnect`. `recover()` calls the local ladder directly. The main process becomes a UI mirror only; status broadcasts to it remain best-effort and their 39–68 s deferral becomes cosmetic rather than fatal.
 
-**Acceptance check:** `adb shell am kill com.onthecrow.onthecrowvpn.dev` (kills main, leaves the `:vpn` FGS), then toggle Wi-Fi. Recovery completes with **no** `CTRL` log line. `send recover request` and `recover request ignored — no cached config` never appear again.
+**Acceptance check:** `adb shell am kill com.onthecrow.deltavpn.dev` (kills main, leaves the `:vpn` FGS), then toggle Wi-Fi. Recovery completes with **no** `CTRL` log line. `send recover request` and `recover request ignored — no cached config` never appear again.
 
 ---
 
 ### Change 5 — The ladder
 
-**File:** `OnthecrowVpnService.kt` (replaces `startTunnelJob` / `recover`, `:415-457`)
+**File:** `DeltaVpnService.kt` (replaces `startTunnelJob` / `recover`, `:415-457`)
 
 Implement T0 → T1 → T2 → T3 as specified above. Requirements:
 
@@ -439,7 +439,7 @@ Implement T0 → T1 → T2 → T3 as specified above. Requirements:
 
 ### Change 6 — Remove the screen-off gate
 
-**File:** `OnthecrowVpnService.kt:592-606`
+**File:** `DeltaVpnService.kt:592-606`
 
 Stop cancelling `tunnelJob` on `ACTION_SCREEN_OFF`; **slow the keepalive loop to ~60 s** instead. A handover with the screen off is exactly the case that must work, and post-Change-3 it costs ~250 ms of CPU under a wakelock. Keep `ACTION_SCREEN_ON` as a fast path alongside the idle-exit receiver.
 
@@ -451,7 +451,7 @@ This is best-effort by construction — `delay()` rides `CLOCK_MONOTONIC` and do
 
 ### Change 7 — Register the network callback once per process
 
-**File:** `OnthecrowVpnService.kt:483, 492-506` (`startMonitoring` / `stopMonitoring`)
+**File:** `DeltaVpnService.kt:483, 492-506` (`startMonitoring` / `stopMonitoring`)
 
 Register before `startXrayOnTun`, never unregister until `onDestroy`. AOSP enforces a per-UID cap of 100 concurrent `NetworkRequest`s and throws `TooManyRequestsException` past it — a real ceiling in a long-lived `:vpn` process doing in-process recovery, made worse because `stopMonitoring()` currently swallows unregister failures in `runCatching { }`.
 
@@ -461,7 +461,7 @@ Register before `startXrayOnTun`, never unregister until `onDestroy`. AOSP enfor
 
 ### Change 8 — Split user-disconnect from recovery-restart ★
 
-**File:** `OnthecrowVpnService.kt:339-370` (`runDisconnect`)
+**File:** `DeltaVpnService.kt:339-370` (`runDisconnect`)
 
 Split into:
 
@@ -480,7 +480,7 @@ Split into:
 
 ### Change 9 — T3 restart engine
 
-**Files:** `androidApp/src/main/AndroidManifest.xml`; `OnthecrowVpnService.kt`; new `core/vpn/impl/src/androidMain/.../BootRestoreReceiver.kt`
+**Files:** `androidApp/src/main/AndroidManifest.xml`; `DeltaVpnService.kt`; new `core/vpn/impl/src/androidMain/.../BootRestoreReceiver.kt`
 
 Manifest additions and the `restartProcessForRecovery` body exactly as specified in "Restart tier — exact mechanics". Plus:
 
@@ -887,7 +887,7 @@ Use `ELAPSED_REALTIME_WAKEUP`, never `RTC_*` — `RTC` alarms move when the cloc
 
 A manifest receiver works (manifest receivers are startable by an explicit `PendingIntent.getBroadcast` and are not subject to the implicit-broadcast ban), but it buys nothing and costs three things: an extra process/component start hop, ~10 s `onReceive` budget pressure, and — because the receiver would live in the *default* process by default — a **main-process cold start**, exactly the dependency step 4 of the analysis deleted.
 
-`PendingIntent.getForegroundService()` with an explicit `ComponentName` for `OnthecrowVpnService` lands **directly in `:vpn`**, no receiver, no main process, no `START_STICKY`. Use that.
+`PendingIntent.getForegroundService()` with an explicit `ComponentName` for `DeltaVpnService` lands **directly in `:vpn`**, no receiver, no main process, no `START_STICKY`. Use that.
 
 **HyperOS/MIUI Autostart:** gates cold starts of the app's components generally — receivers *and* service starts. It is not receiver-specific, so avoiding the receiver does not avoid Autostart. This is the one candidate-independent residual, addressed only in §6.
 
@@ -924,7 +924,7 @@ and from the app, `Settings.Secure.getString(cr, "always_on_vpn_app")` — expec
 | Rank | Mechanism | Reliability | Why |
 |---|---|---|---|
 | **R0** | `shutdown(fd)` in-process eviction (§1) | **Unknown — 0 % or ~99 %.** Binary, cheap to determine. | If the `EPIPE` teardown fires, no restart is ever needed. Zero leak. Test first. |
-| **R1** | `setExactAndAllowWhileIdle` → `PendingIntent.getForegroundService(OnthecrowVpnService)` | **~97 % stock AOSP; ~85-90 % HyperOS** | No quota (§2b), no permission (§2a), FGS start triple-granted (§0). Sole residuals: OEM Autostart, LMK during the gap, alarm loss across reboot. |
+| **R1** | `setExactAndAllowWhileIdle` → `PendingIntent.getForegroundService(DeltaVpnService)` | **~97 % stock AOSP; ~85-90 % HyperOS** | No quota (§2b), no permission (§2a), FGS start triple-granted (§0). Sole residuals: OEM Autostart, LMK during the gap, alarm loss across reboot. |
 | **R2** | Always-on VPN + lockdown (user-configured) | **~99.9 %, but not app-controllable** | Only defence against OEM kills; only zero-leak restart. Cannot be granted programmatically. |
 | **R3** | Persisted `JobScheduler` job, network-triggered | **"eventually"** | Catches lost alarms. Deferred in Doze. |
 | **R4** | `BOOT_COMPLETED` + `MY_PACKAGE_REPLACED` | **N/A — different failure** | Not a restart engine; restores after reboot/update. |
@@ -961,7 +961,7 @@ private fun restartProcess(reason: String) {
     paramsStore.save(currentParams)                     // 1. persist FIRST
     recoveryPrefs().edit().putInt(KEY_RESTART_GEN, gen + 1).commit()  // commit, not apply
 
-    val intent = Intent(this, OnthecrowVpnService::class.java)
+    val intent = Intent(this, DeltaVpnService::class.java)
         .setAction(ACTION_CONNECT)
         .putExtra(EXTRA_RESTART_REASON, reason)
     val pi = PendingIntent.getForegroundService(
@@ -980,7 +980,7 @@ private fun restartProcess(reason: String) {
 
 Four non-obvious requirements:
 
-1. **`stopSelf()` before the kill.** Without it AMS also schedules a `START_STICKY` restart, which races the alarm for the same component and reintroduces the ×4 `SERVICE_RESTART_DURATION` escalation (D9). The existing comment at `OnthecrowVpnService.kt:322` shows this is already understood — keep it. Better still, **return `START_NOT_STICKY`** from `onStartCommand` (currently `START_STICKY` at `:151`) once the alarm engine lands; `START_STICKY` is now pure liability.
+1. **`stopSelf()` before the kill.** Without it AMS also schedules a `START_STICKY` restart, which races the alarm for the same component and reintroduces the ×4 `SERVICE_RESTART_DURATION` escalation (D9). The existing comment at `DeltaVpnService.kt:322` shows this is already understood — keep it. Better still, **return `START_NOT_STICKY`** from `onStartCommand` (currently `START_STICKY` at `:151`) once the alarm engine lands; `START_STICKY` is now pure liability.
 2. **`FLAG_IMMUTABLE`** — mandatory from Android 12 (`PendingIntent` without a mutability flag throws).
 3. **`RESTART_DELAY_MS = 500`.** Non-zero to let the process actually die; if the alarm fires while the old process is still terminating, AMS may deliver `onStartCommand` into the dying process and the restart is silently lost. 500 ms is empirical headroom — **INFERRED, tune under the stress test.**
 4. **A persisted restart generation counter**, `commit()`-ed not `apply()`-ed (the process is about to be SIGKILLed). Use it to enforce backoff across process deaths — otherwise every fresh process starts with a clean debounce and can hot-loop. The existing `recordRecoveryKill` (`:418-425`) already uses `commit()` and `elapsedRealtime()`; note `elapsedRealtime()` **survives** the process death but **resets at reboot**, which is correct behaviour here.
@@ -1186,14 +1186,14 @@ Derived budget for the operations in the current kill-and-rebuild path:
 | **Gap: nothing scheduled** | **seconds to tens of seconds** | AMS `SERVICE_RESTART_DURATION` with ×4 escalation, or exact-alarm quota in Doze, or OEM autostart gating. |
 | Zygote fork + `:vpn` process start | 80-250 ms | Fork is cheap; class loading + `libXray.so` dlopen dominate. |
 | `Builder.establish()` | 30-120 ms | Binder to system_server → `Vpn.establish()` → tun create + `NetworkAgent` register + netd rule install. |
-| netd per-UID rule install (async, **after** `establish()` returns) | 20-200 ms | This is the window that makes the current probe lie (`OnthecrowVpnService.kt:222-224` already documents it). |
+| netd per-UID rule install (async, **after** `establish()` returns) | 20-200 ms | This is the window that makes the current probe lie (`DeltaVpnService.kt:222-224` already documents it). |
 | xray start + fresh hysteria dial | 190-272 ms | Measured in the analysis. |
 
 **Sum of real work: well under 1 second.** The measured 22.2 s is therefore ~97 % *scheduling and policy delay*, not I/O. That is the actionable conclusion: optimising `establish()` or fd teardown is pointless. The only thing worth attacking is the "who restarts us, and when" gap — and the only way to win that is **to not need anyone to restart us**.
 
 ### 2.2 What can be avoided or overlapped
 
-- **`Builder.establish()`, `NetworkAgent` registration, netd rule install: avoidable entirely** — by never closing `tunInterface`. Note the working tree already has the *comment* for this at `OnthecrowVpnService.kt:284-288` ("we dup so xray can be stopped/restarted... without ever closing the master `tunInterface`") while `runConnect` unconditionally calls `stopTunnel()` at `:213`. D5 in the analysis is confirmed: the comment describes a design that is not in the tree.
+- **`Builder.establish()`, `NetworkAgent` registration, netd rule install: avoidable entirely** — by never closing `tunInterface`. Note the working tree already has the *comment* for this at `DeltaVpnService.kt:284-288` ("we dup so xray can be stopped/restarted... without ever closing the master `tunInterface`") while `runConnect` unconditionally calls `stopTunnel()` at `:213`. D5 in the analysis is confirmed: the comment describes a design that is not in the tree.
 - **Process spawn: overlappable** — you can start and warm a replacement process *while the old one is still serving*. See §3.
 - **AMS restart backoff: avoidable** — only if the thing being restarted is a **bound** service supervised by a live process, not a service AMS is restarting on its own schedule.
 
@@ -1264,4 +1264,4 @@ Properties:
 3. **Ship the `:xray` process split.** It is the owner's "just restart the process" instruction, applied to the correct process — with a zero leak window instead of 22.2 s, ~300 ms instead of seconds-to-minutes, and no dependency on AMS, alarms, broadcasts, or OEM policy.
 4. Steps 1 (honest probe), 4 (recovery stays in `:vpn`) and 5 (trigger set) from the analysis are unchanged and still required. Step 0 instrumentation still ships first — nothing here is measurable until the probe stops lying.
 
-**Files that change:** `androidApp/src/main/AndroidManifest.xml` (declare `:xray` bound service), `core/xray/src/androidMain/kotlin/com/onthecrow/onthecrowvpn/xray/PlatformXrayEngine.android.kt` (becomes an AIDL client in `:vpn`, with the current body moving into the `:xray` service), `core/xray/src/androidMain/kotlin/com/onthecrow/onthecrowvpn/xray/AndroidVpnSocketProtector.kt` (becomes the AIDL callback target), `core/vpn/impl/src/androidMain/kotlin/com/onthecrow/onthecrowvpn/vpn/OnthecrowVpnService.kt` (supervisor + `runRedial()`; `stopTunnel()` leaves `runConnect`). No Go changes.
+**Files that change:** `androidApp/src/main/AndroidManifest.xml` (declare `:xray` bound service), `core/xray/src/androidMain/kotlin/com/onthecrow/deltavpn/xray/PlatformXrayEngine.android.kt` (becomes an AIDL client in `:vpn`, with the current body moving into the `:xray` service), `core/xray/src/androidMain/kotlin/com/onthecrow/deltavpn/xray/AndroidVpnSocketProtector.kt` (becomes the AIDL callback target), `core/vpn/impl/src/androidMain/kotlin/com/onthecrow/deltavpn/vpn/DeltaVpnService.kt` (supervisor + `runRedial()`; `stopTunnel()` leaves `runConnect`). No Go changes.

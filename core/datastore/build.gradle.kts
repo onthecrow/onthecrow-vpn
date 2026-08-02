@@ -5,7 +5,7 @@ plugins {
 
 kotlin {
     androidLibrary {
-        namespace = "com.onthecrow.onthecrowvpn.datastore"
+        namespace = "com.onthecrow.deltavpn.datastore"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
     }

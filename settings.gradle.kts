@@ -1,4 +1,4 @@
-rootProject.name = "OnthecrowVPN"
+rootProject.name = "DeltaVPN"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {

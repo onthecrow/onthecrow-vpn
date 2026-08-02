@@ -6,7 +6,7 @@ plugins {
 
 kotlin {
     androidLibrary {
-        namespace = "com.onthecrow.onthecrowvpn.connection.logic.impl"
+        namespace = "com.onthecrow.deltavpn.connection.logic.impl"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
     }

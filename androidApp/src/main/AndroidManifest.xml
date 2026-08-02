@@ -25,7 +25,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
-        android:name=".OnthecrowVpnApplication"
+        android:name=".DeltaVpnApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -58,13 +58,14 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- Quick Settings tile: tap toggles the tunnel with the selected config. Uses a dedicated
-             full-bleed vector rather than the adaptive launcher foreground, whose safe-zone margin made
-             the tile render smaller than every other app's. -->
+        <!-- Quick Settings tile: tap toggles the tunnel with the selected config. Shares the
+             notification's monochrome mark (core:vpn:impl `ic_app_mono`) — the same artwork as the
+             launcher icon, minus the adaptive safe-zone margin that made the tile render smaller than
+             every other app's, and flattened to one alpha-tintable fill. -->
         <service
             android:name=".VpnTileService"
             android:exported="true"
-            android:icon="@drawable/ic_qs_tile"
+            android:icon="@drawable/ic_app_mono"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
@@ -87,7 +88,7 @@
              needs restarting. Everything that DOES need restarting (libXray and its Go globals) lives
              in `:xray` below, where killing it costs nothing visible. -->
         <service
-            android:name=".vpn.OnthecrowVpnService"
+            android:name=".vpn.DeltaVpnService"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">
@@ -112,7 +113,7 @@
              alive on the app process's BIND_IMPORTANT binding, and a second specialUse subtype would
              be a second hand-reviewed justification on Play for no capability we lack. -->
         <service
-            android:name="com.onthecrow.onthecrowvpn.xray.ipc.XrayEngineService"
+            android:name="com.onthecrow.deltavpn.xray.ipc.XrayEngineService"
             android:exported="false"
             android:process=":xray" />
     </application>

@@ -1,4 +1,4 @@
-# OnthecrowVPN
+# DeltaVPN
 
 Kotlin Multiplatform / Compose Multiplatform VPN proof of concept.
 
@@ -15,7 +15,7 @@ Per-platform deep dives (architecture, build & signing, debugging):
   **[`macosApp/README.md`](macosApp/README.md)** + **[`desktopApp/README.md`](desktopApp/README.md)**
   (the JVM/UI side and per-OS VPN wiring).
 
-The iOS and macOS tunnel core (`OnthecrowTunnelCore`) and NE management (`AppleTunnelManager`) are a
+The iOS and macOS tunnel core (`DeltaTunnelCore`) and NE management (`AppleTunnelManager`) are a
 single Kotlin/Native codebase shared via an `appleMain` source set.
 
 ## Architecture

@@ -5,9 +5,12 @@ plugins {
 
 kotlin {
     androidLibrary {
-        namespace = "com.onthecrow.onthecrowvpn.vpn.impl"
+        namespace = "com.onthecrow.deltavpn.vpn.impl"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
+        // Off by default in AGP's KMP plugin, and this is the only module that needs it: the
+        // foreground-service notification is built here, so its small icon lives here too.
+        androidResources.enable = true
     }
     iosArm64()
     iosSimulatorArm64()
@@ -20,7 +23,7 @@ kotlin {
             // ApplicationScopeProvider for the split-tunnel sync (Android-only; core/coroutines has no macOS target).
             implementation(projects.core.coroutines)
             // Analytics for the VPN-service events. androidMain ONLY: core:analytics has no macOS
-            // target, and OnthecrowVpnService (the only caller) is androidMain anyway.
+            // target, and DeltaVpnService (the only caller) is androidMain anyway.
             implementation(projects.core.analytics)
         }
         commonMain.dependencies {

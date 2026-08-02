@@ -10,10 +10,10 @@
     <array>
         <string>packet-tunnel-provider-systemextension</string>
     </array>
-    <!-- Shared with the JVM app + iOS so OnthecrowTunnelCore can publish failure reasons. -->
+    <!-- Shared with the JVM app + iOS so DeltaTunnelCore can publish failure reasons. -->
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.com.onthecrow.onthecrowvpn</string>
+        <string>group.com.onthecrow.deltavpn</string>
     </array>
 </dict>
 </plist>

@@ -8,7 +8,7 @@ plugins {
 
 kotlin {
     androidLibrary {
-        namespace = "com.onthecrow.onthecrowvpn.settings.ui.impl"
+        namespace = "com.onthecrow.deltavpn.settings.ui.impl"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
         minSdk = libs.versions.android.minSdk.get().toInt()
     }

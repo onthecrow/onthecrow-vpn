@@ -11,7 +11,7 @@
     <true/>
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.com.onthecrow.onthecrowvpn</string>
+        <string>group.com.onthecrow.deltavpn</string>
     </array>
 </dict>
 </plist>

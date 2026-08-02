@@ -138,7 +138,7 @@
 		067E1D182FD2BAAB000C22B9 /* LibXray.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LibXray.xcframework; path = ../libs/LibXray/LibXray.xcframework; sourceTree = "<group>"; };
 		067E1D202FD2BD83000C22B9 /* PacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		067E1D212FD2BD83000C22B9 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
-		68DAB6C0C1FA5A7AB161FDE2 /* OnthecrowVPN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OnthecrowVPN.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		68DAB6C0C1FA5A7AB161FDE2 /* DeltaVPN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DeltaVPN.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FB0000000000000000000011 /* FBLPromises.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FBLPromises.xcframework; path = ../libs/FirebaseAnalytics/FBLPromises.xcframework; sourceTree = SOURCE_ROOT; };
 		FB0000000000000000000012 /* FirebaseAnalytics.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseAnalytics.xcframework; path = ../libs/FirebaseAnalytics/FirebaseAnalytics.xcframework; sourceTree = SOURCE_ROOT; };
 		FB0000000000000000000013 /* FirebaseCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = FirebaseCore.xcframework; path = ../libs/FirebaseAnalytics/FirebaseCore.xcframework; sourceTree = SOURCE_ROOT; };
@@ -270,7 +270,7 @@
 		02F940A3DC63A91D0CEF2792 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				68DAB6C0C1FA5A7AB161FDE2 /* OnthecrowVPN.app */,
+				68DAB6C0C1FA5A7AB161FDE2 /* DeltaVPN.app */,
 				067E1D202FD2BD83000C22B9 /* PacketTunnel.appex */,
 			);
 			name = Products;
@@ -376,7 +376,7 @@
 			);
 			name = iosApp;
 			productName = iosApp;
-			productReference = 68DAB6C0C1FA5A7AB161FDE2 /* OnthecrowVPN.app */;
+			productReference = 68DAB6C0C1FA5A7AB161FDE2 /* DeltaVPN.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -559,7 +559,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowVPN.dev.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.deltavpn.DeltaVPN.dev.PacketTunnel;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -595,7 +595,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowVPN.dev.PacketTunnel;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.deltavpn.DeltaVPN.dev.PacketTunnel;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -634,7 +634,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowVPN.dev;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.deltavpn.DeltaVPN.dev;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -728,7 +728,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.onthecrowvpn.OnthecrowVPN;
+				PRODUCT_BUNDLE_IDENTIFIER = com.onthecrow.deltavpn.DeltaVPN;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;

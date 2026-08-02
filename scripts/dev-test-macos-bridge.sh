@@ -18,10 +18,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LINK="${1:-}"
 [ -n "$LINK" ] || { echo "usage: $0 '<share-link>'" >&2; exit 1; }
 
-CONVERT="$ROOT/local-libs/libxray-desktop/macos-arm64/onthecrow-convert"
+CONVERT="$ROOT/local-libs/libxray-desktop/macos-arm64/delta-convert"
 # Run the bridge from the /Applications service .app (must be there so it can activate the sysext and
 # so its designated requirement matches the one that activated the provider).
-APP_BRIDGE="/Applications/OnthecrowVpnService.app/Contents/MacOS/onthecrow-macos-bridge"
+APP_BRIDGE="/Applications/DeltaVpnService.app/Contents/MacOS/onthecrow-macos-bridge"
 RAW_BRIDGE="$ROOT/core/vpn/macos-bridge/build/bin/macosArm64/releaseExecutable/onthecrow-macos-bridge.kexe"
 if [ -x "$APP_BRIDGE" ]; then BRIDGE="$APP_BRIDGE"; else BRIDGE="$RAW_BRIDGE"; fi
 [ -x "$CONVERT" ] || { echo "converter not found: $CONVERT" >&2; exit 1; }

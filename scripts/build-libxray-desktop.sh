@@ -9,7 +9,7 @@
 # v26.7.11; we now carry it in scripts/desktop/sidecar/ and graft it back into
 # the module tree here. See that directory's main.go for what differs.
 #
-# Output: local-libs/libxray-desktop/<os-arch>/onthecrow-xray[.exe]
+# Output: local-libs/libxray-desktop/<os-arch>/delta-xray[.exe]
 #
 # Targets (override with $TARGETS, space-separated): macos-arm64 macos-x64 windows-x64 windows-arm64
 # Requirements: git, go.
@@ -63,10 +63,10 @@ build_target() {
   local target="$1"
   local goos goarch xray_name convert_name
   case "${target}" in
-    macos-arm64)  goos=darwin;  goarch=arm64; xray_name=onthecrow-xray;     convert_name=onthecrow-convert ;;
-    macos-x64)    goos=darwin;  goarch=amd64; xray_name=onthecrow-xray;     convert_name=onthecrow-convert ;;
-    windows-x64)  goos=windows; goarch=amd64; xray_name=onthecrow-xray.exe; convert_name=onthecrow-convert.exe ;;
-    windows-arm64) goos=windows; goarch=arm64; xray_name=onthecrow-xray.exe; convert_name=onthecrow-convert.exe ;;
+    macos-arm64)  goos=darwin;  goarch=arm64; xray_name=delta-xray;     convert_name=delta-convert ;;
+    macos-x64)    goos=darwin;  goarch=amd64; xray_name=delta-xray;     convert_name=delta-convert ;;
+    windows-x64)  goos=windows; goarch=amd64; xray_name=delta-xray.exe; convert_name=delta-convert.exe ;;
+    windows-arm64) goos=windows; goarch=arm64; xray_name=delta-xray.exe; convert_name=delta-convert.exe ;;
     *) echo "Unknown target: ${target}" >&2; exit 1 ;;
   esac
 
@@ -98,7 +98,7 @@ build_target() {
       echo "          wintun.dll MUST match the *OS* arch (it's a kernel driver), not the emulated process."
       echo "          Download from https://www.wintun.net, take bin/${wintun_arch}/wintun.dll and place it at:"
       echo "          ${out_dir}/wintun.dll"
-      echo "          The app copies it next to onthecrow-xray.exe at connect time."
+      echo "          The app copies it next to delta-xray.exe at connect time."
       ;;
   esac
 }

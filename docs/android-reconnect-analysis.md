@@ -10,17 +10,17 @@
 
 ## Executive summary
 
-**The single most important finding: the health probe lies, and it lies precisely in the state it exists to detect.** `probeTunnel` (`OnthecrowVpnService.kt:462-474`) opens an *unconnected* `DatagramSocket`, sends a DNS query to `1.1.1.1:53`, and accepts *any* datagram of length > 0 as success — it never `connect()`s, never verifies it is on the tun, and never checks the DNS transaction ID it built. When a probe is issued shortly after `Builder.establish()` returns, the datagram egresses on the **physical** network, gets a legitimate answer, and the probe reports "healthy" on a tunnel that is dead. This is proven twice over: (a) correlation — the "OK" probes at `01:39:39.484` and `01:40:03.687` have **no matching** `proxy/tun: processing from udp:10.77.0.2:… to udp:1.1.1.1:53` entry in `xray (3).log`, while every failing probe does; (b) physics — those probes completed in **38-39 ms**, while every probe that genuinely traversed tun → gVisor → hysteria2 → Ireland (`78.17.84.51`) → 1.1.1.1 → back cost **158-226 ms**. All three fast ones were sent 71-135 ms after `establish()`; all the honest ones ≥ 250 ms after. **Consequence: recovery has repeatedly declared victory mid-failure, and no measurement taken so far can be trusted.** Fix the sensor before anything else, or you cannot evaluate any other change.
+**The single most important finding: the health probe lies, and it lies precisely in the state it exists to detect.** `probeTunnel` (`DeltaVpnService.kt:462-474`) opens an *unconnected* `DatagramSocket`, sends a DNS query to `1.1.1.1:53`, and accepts *any* datagram of length > 0 as success — it never `connect()`s, never verifies it is on the tun, and never checks the DNS transaction ID it built. When a probe is issued shortly after `Builder.establish()` returns, the datagram egresses on the **physical** network, gets a legitimate answer, and the probe reports "healthy" on a tunnel that is dead. This is proven twice over: (a) correlation — the "OK" probes at `01:39:39.484` and `01:40:03.687` have **no matching** `proxy/tun: processing from udp:10.77.0.2:… to udp:1.1.1.1:53` entry in `xray (3).log`, while every failing probe does; (b) physics — those probes completed in **38-39 ms**, while every probe that genuinely traversed tun → gVisor → hysteria2 → Ireland (`78.17.84.51`) → 1.1.1.1 → back cost **158-226 ms**. All three fast ones were sent 71-135 ms after `establish()`; all the honest ones ≥ 250 ms after. **Consequence: recovery has repeatedly declared victory mid-failure, and no measurement taken so far can be trusted.** Fix the sensor before anything else, or you cannot evaluate any other change.
 
 **The second root cause: the ~30 s stall is quic-go's idle timer, not a permanent pool cache — and the timer does not run while the CPU is suspended.** xray-core's hysteria transport keeps a process-global client pool (`manger`, `dialer.go:437`) keyed on `dest.NetAddr()` (`dialer.go:446`). `StopXray` does not touch it (`xray/xray.go:106-115` closes only the `core.Instance`). But `dial()` *does* self-heal (`dialer.go:149-156`): it re-dials as soon as `status()` reports `StatusInactive`, and `status()` (`dialer.go:129-139`) is nothing but a `select` on `c.conn.Context().Done()`. That context is cancelled only by the QUIC idle timer, which defaults to **30 s** (`dialer.go:245-247`) with **keepalive disabled** — the default is literally commented out (`dialer.go:248-250`), and `XrayConfigSanitizer.kt:51-110` never emits `streamSettings.finalmask.quicParams`. So the pool pins a corpse for 30 s of *awake* time. Go's runtime timers ride `CLOCK_MONOTONIC`, which does not advance across Android suspend, so post-Doze the 30 s countdown **restarts at resume**: measured `20:40:02.834 − 20:39:32.751 = 30.08 s` from screen-on to the first fresh `dialing to udp:78.17.84.51:1935`. Three in-process xray restarts inside that window (`20:39:34.338`, `20:39:39.439`, `20:39:58.567`) produced **no dial at all**. The project's founding premise — "only a fresh process clears the pool" — is therefore false as stated: the process kill works by bypassing a timer, not by clearing a permanent cache.
 
-**The third root cause: recovery is routed across a process boundary to a process that is normally dead.** `recover()` (`OnthecrowVpnService.kt:405-413`) sends a broadcast (`VpnStatusBroadcast.kt:45-48`) to a **runtime-registered** receiver in the main process (`PlatformVpnController.android.kt:42-44`). A runtime receiver cannot start a process. In `vpn-debug (13).log` the main process (pid 26986) logs last at `01:40:42.462` and the next main pid (5982) appears only at `02:16:00` because the *user* opened the app — a ~35 minute gap while the tunnel was up. And when the main process *is* alive but cached, delivery is deferred: the four `Connected` broadcasts sent at `01:39:34.363 / 01:39:39.444 / 01:39:58.579 / 01:40:03.648` all arrived in one batch at `01:40:42.460-.462` — **68 s / 63 s / 44 s / 39 s**. Even on arrival, `lastXrayJson` is an in-memory field (`PlatformVpnController.android.kt:27-28`) and is `null` in any freshly-restarted main process, so the handler logs "recover request ignored — no cached config". Three independent ways to fail, stacked.
+**The third root cause: recovery is routed across a process boundary to a process that is normally dead.** `recover()` (`DeltaVpnService.kt:405-413`) sends a broadcast (`VpnStatusBroadcast.kt:45-48`) to a **runtime-registered** receiver in the main process (`PlatformVpnController.android.kt:42-44`). A runtime receiver cannot start a process. In `vpn-debug (13).log` the main process (pid 26986) logs last at `01:40:42.462` and the next main pid (5982) appears only at `02:16:00` because the *user* opened the app — a ~35 minute gap while the tunnel was up. And when the main process *is* alive but cached, delivery is deferred: the four `Connected` broadcasts sent at `01:39:34.363 / 01:39:39.444 / 01:39:58.579 / 01:40:03.648` all arrived in one batch at `01:40:42.460-.462` — **68 s / 63 s / 44 s / 39 s**. Even on arrival, `lastXrayJson` is an in-memory field (`PlatformVpnController.android.kt:27-28`) and is `null` in any freshly-restarted main process, so the handler logs "recover request ignored — no cached config". Three independent ways to fail, stacked.
 
-**Fourth: the tun is destroyed and rebuilt on every recovery, and it must not be.** `runConnect` calls `stopTunnel()` (`OnthecrowVpnService.kt:188`), which closes the master `tunInterface` (`:340-346`). The class comments at `:60-63`, `:227-231` and `:290` claim the opposite and are **false** — the `keepTun` path was deleted from the tree. This costs: a measured **22.2 s of completely unprotected traffic** on the process-kill path (`02:16:09.861` kill → `02:16:32.109` new tun), the establish-window that makes the probe lie, and a deterministic **fd-number recycling race** (`101/102/103` reused every cycle) against gVisor reader goroutines that `AndroidTun.Close()` — a verified no-op at `tun_android.go:47-49` — never stops.
+**Fourth: the tun is destroyed and rebuilt on every recovery, and it must not be.** `runConnect` calls `stopTunnel()` (`DeltaVpnService.kt:188`), which closes the master `tunInterface` (`:340-346`). The class comments at `:60-63`, `:227-231` and `:290` claim the opposite and are **false** — the `keepTun` path was deleted from the tree. This costs: a measured **22.2 s of completely unprotected traffic** on the process-kill path (`02:16:09.861` kill → `02:16:32.109` new tun), the establish-window that makes the probe lie, and a deterministic **fd-number recycling race** (`101/102/103` reused every cycle) against gVisor reader goroutines that `AndroidTun.Close()` — a verified no-op at `tun_android.go:47-49` — never stops.
 
 **Fifth: `START_STICKY` is not a restart engine here.** Zero `"sticky restart"` hits across every `vpn-debug*.log`. The observed evidence is a 20.2 s gap after a self-kill ended by the user pressing reconnect — which proves *unbounded and escalating* restart latency (AMS `SERVICE_RESTART_DURATION` with ×4 escalation), not a hard failure. Either way: unusable.
 
-**Sixth: `setUnderlyingNetworks()` routes nothing.** The doc comment at `OnthecrowVpnService.kt:573-577` ("so protected sockets follow it") is wrong. It writes `NetworkAgent` metadata only — transports, metered/roaming/suspended, bandwidth, `NetworkStats` attribution. A `protect()`ed socket follows the **system default network**, always. This wrong model is why the fix effort was aimed at socket binding and underlying-network freshness, which is not where the failure lives. (The re-query must still be restored — as a *detector* of handovers slept through, proven by `01:39:34.280 underlying refresh: STALE 111 -> 101` on a transition where `onAvailable` never fired.)
+**Sixth: `setUnderlyingNetworks()` routes nothing.** The doc comment at `DeltaVpnService.kt:573-577` ("so protected sockets follow it") is wrong. It writes `NetworkAgent` metadata only — transports, metered/roaming/suspended, bandwidth, `NetworkStats` attribution. A `protect()`ed socket follows the **system default network**, always. This wrong model is why the fix effort was aimed at socket binding and underlying-network freshness, which is not where the failure lives. (The re-query must still be restored — as a *detector* of handovers slept through, proven by `01:39:34.280 underlying refresh: STALE 111 -> 101` on a transition where `onAvailable` never fired.)
 
 ### The recommended design, in one paragraph
 
@@ -38,15 +38,15 @@ Three log lines that settle four open disputes in a single field run.
 
 | # | Change | File | Settles |
 |---|---|---|---|
-| 0.1 | Log `socket.localAddress` on every probe | `OnthecrowVpnService.kt:462-474` | Whether the probe escapes the tun (the false-positive mechanism) |
-| 0.2 | Log the full emitted `runtimeJson` once | `OnthecrowVpnService.kt:245` | Whether `streamSettings.finalmask.quicParams` exists today (insert vs. merge) — **the one unverified config field in this document** |
-| 0.3 | Log the dup'd fd number on every `setTunFd` and every close | `OnthecrowVpnService.kt:227-250`, `:299-304` | The fd-recycling race |
+| 0.1 | Log `socket.localAddress` on every probe | `DeltaVpnService.kt:462-474` | Whether the probe escapes the tun (the false-positive mechanism) |
+| 0.2 | Log the full emitted `runtimeJson` once | `DeltaVpnService.kt:245` | Whether `streamSettings.finalmask.quicParams` exists today (insert vs. merge) — **the one unverified config field in this document** |
+| 0.3 | Log the dup'd fd number on every `setTunFd` and every close | `DeltaVpnService.kt:227-250`, `:299-304` | The fd-recycling race |
 
 Field test: handover both directions, plus a Doze exit after ≥ 10 minutes screen-off. Pull `vpn-debug` and `xray` logs.
 
 ### Step 1 — Make the sensor honest
 
-**File:** `OnthecrowVpnService.kt:462-474`.
+**File:** `DeltaVpnService.kt:462-474`.
 
 ```kotlin
 private fun probeTunnel(timeoutMs: Int): Boolean = runCatching {
@@ -107,7 +107,7 @@ func CloseAll() {
 
 ### Step 3 — Keep the tun; re-dial only xray
 
-**Files:** `OnthecrowVpnService.kt:188`, `:227-250`, `:299-304`, `:340-346`; `PlatformXrayEngine.android.kt:103`.
+**Files:** `DeltaVpnService.kt:188`, `:227-250`, `:299-304`, `:340-346`; `PlatformXrayEngine.android.kt:103`.
 
 1. **Add `runRedial()`**: `stopXray()` → `CloseAll()` → `setTunFd(freshDup)` → `xrayEngine.start(runtimeJson)`. It **never** calls `stopTunnel()`. `runConnect` / `stopTunnel` remain for user connect, user disconnect, revoke and fatal failure only.
 2. **Do not close the dup'd fd** (`:302`). `AndroidTun.Close()` is a verified no-op (`tun_android.go:47-49`) and `core.Instance.Close()` does not join the gVisor `fdbased` reader goroutines, while the logs show fd numbers recycling deterministically. Leak one fd per restart — bounded by the recovery count, reclaimed at process death. A timed 200 ms delay before closing is a race you cannot prove you won; reject it.
@@ -121,7 +121,7 @@ func CloseAll() {
 
 **Delete from the critical path:** `sendRecoverRequest` / `registerRecoverRequest` (`VpnStatusBroadcast.kt:45-59`) and `onRecoverRequested` / `reconnect` (`PlatformVpnController.android.kt:47-77`). The main process becomes a UI mirror only.
 
-**Split teardown from recovery.** `runDisconnect` (`OnthecrowVpnService.kt:306-326`) becomes `runUserDisconnect()` — the **only** caller of `paramsStore.clear()` (`:311`) — and `runRecoveryRestart()`, which keeps the persisted params and keeps the status at `Connecting`. Recovery must never emit `Disconnected`: besides destroying its own fallback, that status drives `VpnSyncWorker` (`feature/connection/logic-impl/.../VpnSyncWorker.kt:66-76`) to reset `activeKey`, so a genuine remote config change arriving during a recovery is silently swallowed.
+**Split teardown from recovery.** `runDisconnect` (`DeltaVpnService.kt:306-326`) becomes `runUserDisconnect()` — the **only** caller of `paramsStore.clear()` (`:311`) — and `runRecoveryRestart()`, which keeps the persisted params and keeps the status at `Connecting`. Recovery must never emit `Disconnected`: besides destroying its own fallback, that status drives `VpnSyncWorker` (`feature/connection/logic-impl/.../VpnSyncWorker.kt:66-76`) to reset `activeKey`, so a genuine remote config change arriving during a recovery is silently swallowed.
 
 Move `recordRecoveryKill()` (`:410`) to *after* a confirmed-successful recovery, so a failed attempt does not burn the 6 s debounce token.
 
@@ -140,7 +140,7 @@ Move `recordRecoveryKill()` (`:410`) to *after* a confirmed-successful recovery,
 
 ### Step 5 — The trigger set (all screen-state-independent)
 
-**Files:** `OnthecrowVpnService.kt:508-533` (receivers), `:591-645` (network callback).
+**Files:** `DeltaVpnService.kt:508-533` (receivers), `:591-645` (network callback).
 
 | Trigger | Change | Why |
 |---|---|---|
@@ -160,7 +160,7 @@ Also: **restore `refreshUnderlyingFromSystem()`** (deleted in the working tree) 
 ### Step 6 — Defence in depth (ship, but nothing depends on it)
 
 - **`streamSettings.finalmask.quicParams: { maxIdleTimeout: 8, keepAlivePeriod: 3 }`**, **merged, never overwritten**, in `XrayConfigSanitizer.kt:51-110`. ⚠️ **UNVERIFIED — gated on step 0.2.** The JSON tags (`infra/conf/transport_internet.go:630-643`), the `finalmask` nesting (`:1719-1723`, `:1734`), the bounds `maxIdleTimeout ∈ [4,120]` / `keepAlivePeriod ∈ [2,60]` (`:1951-1956`) and the consumption path (`dialer.go:222-247`) were all read from source, but **nobody has seen the emitted 1101-byte config**, and an unknown key passed silently through `finalmask` would look identical to success. Log `runtimeJson` once, confirm the field parses, then ship. Merge is mandatory: `share/hysteria_mask.go:12` only allocates `quicParams` when the share link carries bandwidth/ports, and clobbering it silently downgrades brutal congestion control to BBR. Values 8/3 rather than 5/2 — a 5 s gap on a lossy cell link tears down a *healthy* connection and each teardown costs a full re-handshake plus hysteria auth. **What it does not do:** it does nothing in Doze (frozen timers), it cannot hold a NAT mapping open through deep sleep, and it cannot rescue an entry already pooled (params are captured at insert, `dialer.go:448-461`). It helps the screen-on handover case only.
-- **IPv6.** Add `addRoute("::", 0)` first so v6 **fails closed** rather than leaking (`OnthecrowVpnService.kt:190-201` is IPv4-only today, and Android does not blackhole address families a VPN omits — on cellular, IPv6 is nearly always present and Happy Eyeballs prefers it). Add `addAddress("fd00:1:2:3::1", 128)` and a v6 DNS server **only after** verifying that `proxy/tun` and the hysteria outbound handle v6 destinations in this build. Ship this **separately, after** the reconnect work is measured — it is a reliability-regression risk (a 250 ms Happy Eyeballs penalty per connection if v6 egress is broken) and it will confound the field measurement.
+- **IPv6.** Add `addRoute("::", 0)` first so v6 **fails closed** rather than leaking (`DeltaVpnService.kt:190-201` is IPv4-only today, and Android does not blackhole address families a VPN omits — on cellular, IPv6 is nearly always present and Happy Eyeballs prefers it). Add `addAddress("fd00:1:2:3::1", 128)` and a v6 DNS server **only after** verifying that `proxy/tun` and the hysteria outbound handle v6 destinations in this build. Ship this **separately, after** the reconnect work is measured — it is a reliability-regression risk (a 250 ms Happy Eyeballs penalty per connection if v6 egress is broken) and it will confound the field measurement.
 - **`BOOT_COMPLETED`** manifest receiver + `RECEIVE_BOOT_COMPLETED` (absent today): restore the tunnel on boot if `ConnectionParams` exist.
 - **In-app recommendation for always-on VPN + lockdown**, deep-linking to `Settings.ACTION_VPN_SETTINGS`, plus a HyperOS Autostart prompt. This is the strongest thing available — the system owns restart, and lockdown installs UID-range blackhole rules so every residual gap fails **closed** — but it cannot be granted programmatically and has no public read API. **Recommendation only; it does not count toward the target.**
 - MTU 1500 → 1400 (`:191`). Proxied UDP near 1500 B cannot fit a QUIC DATAGRAM frame (quic-go clamps ~1200-1350), which exposes QUIC-over-QUIC (browser HTTP/3, all over the logs as `udp:…:443`), large DNS and WebRTC. Low priority, unconfirmed without a capture.
@@ -229,7 +229,7 @@ The second half of the argument is the sensor. With an honest probe, every tier'
 
 1. **Probe honesty.** Reproduce the Doze-exit sequence. Expect: on every `tunnel probe OK`, a new log line showing `localAddress=10.77.0.2`. If any "OK" verdict shows a physical address (`192.168.x.x` or the rmnet address), the false-positive mechanism is confirmed and step 1 fixes it by construction. Cross-check every probe against `xray*.log` for a matching `proxy/tun: processing from udp:10.77.0.2:<port> to udp:1.1.1.1:53` (remember: xray timestamps run ~5 h behind). Any probe with a sub-100 ms latency and no matching tun entry is a liar.
 2. **Config field.** Grep the logged `runtimeJson` for `finalmask` and `quicParams`. Determines whether step 6 is an insert or a merge — and whether it is viable at all.
-3. **Main-process death.** `adb shell am kill com.onthecrow.onthecrowvpn.dev` (kills main, leaves the `:vpn` FGS), then toggle Wi-Fi. Expect a `SVC` recovery line with **no** matching `CTRL` line — confirming the broadcast path is dead. Cross-check with `adb shell dumpsys activity processes | grep onthecrowvpn`.
+3. **Main-process death.** `adb shell am kill com.onthecrow.deltavpn.dev` (kills main, leaves the `:vpn` FGS), then toggle Wi-Fi. Expect a `SVC` recovery line with **no** matching `CTRL` line — confirming the broadcast path is dead. Cross-check with `adb shell dumpsys activity processes | grep deltavpn`.
 4. **Clock freeze.** Measure the delay from `SCREEN ON` to the next `dialing to udp:` in `xray.log` after ≥ 10 minutes of screen-off. ~30 s from screen-on (not from when the network actually changed) confirms the `CLOCK_MONOTONIC` model.
 
 **After steps 1-5.**
@@ -289,7 +289,7 @@ The second half of the argument is the sensor. With an honest probe, every tier'
 
 ## 1. Current solution as implemented
 
-**Processes.** `OnthecrowVpnService` runs in `:vpn` (`androidApp/src/main/AndroidManifest.xml:56-66`, `android:process=":vpn"`, `foregroundServiceType="specialUse"`). `OnthecrowVpnApplication.onCreate` builds the Koin graph **only in the main process** (`androidApp/.../OnthecrowVpnApplication.kt:17-19`); `:vpn` initializes just `AndroidXrayEnvironment` + `AndroidVpnEnvironment` in `OnthecrowVpnService.onCreate` (`OnthecrowVpnService.kt:104-113`).
+**Processes.** `DeltaVpnService` runs in `:vpn` (`androidApp/src/main/AndroidManifest.xml:56-66`, `android:process=":vpn"`, `foregroundServiceType="specialUse"`). `DeltaVpnApplication.onCreate` builds the Koin graph **only in the main process** (`androidApp/.../DeltaVpnApplication.kt:17-19`); `:vpn` initializes just `AndroidXrayEnvironment` + `AndroidVpnEnvironment` in `DeltaVpnService.onCreate` (`DeltaVpnService.kt:104-113`).
 
 **Connect.** `PlatformVpnController.connect` (`PlatformVpnController.android.kt:79-118`): sets `lastXrayJson`, publishes `Connecting`, polls `awaitVpnProcessGone` (3 s budget, 50 ms poll, `:144-158`), then `startForegroundService(ACTION_CONNECT)` with the xray JSON + split-tunnel lists. In `:vpn`, `onStartCommand` (`:115-152`) calls `startAsForeground()`, persists params to `ConnectionParamsStore`, and launches `runConnect` (`:175-220`): `applyUnderlyingNetworks(lastUnderlying)` (null at this point) → `stopTunnel()` → `Builder().establish()` → `startXrayOnTun` with a **dup** of the tun fd (`:227-250`) → broadcast `Connected` → `startMonitoring()`. Returns `START_STICKY`.
 
@@ -312,7 +312,7 @@ Constants in force: probe 1500 ms, keepalive 8000 ms × 2 fails, recovery deboun
 ## 2. Problems
 
 ### P1 — The recovery request is sent to a process that is normally dead. This is the primary cause of "VPN never comes back."
-`OnthecrowVpnService.kt:412` → `VpnStatusBroadcast.kt:45-48` → receiver registered at runtime in `PlatformVpnController.android.kt:42-44`. A **runtime-registered** receiver exists only while its process lives; a `sendBroadcast` targeting only runtime receivers **does not start the process**. There is no manifest receiver, no manifest component of any kind that can be woken.
+`DeltaVpnService.kt:412` → `VpnStatusBroadcast.kt:45-48` → receiver registered at runtime in `PlatformVpnController.android.kt:42-44`. A **runtime-registered** receiver exists only while its process lives; a `sendBroadcast` targeting only runtime receivers **does not start the process**. There is no manifest receiver, no manifest component of any kind that can be woken.
 
 **Verified in the field logs.** In `vpn-debug (13).log`: main process `26986` logs for the last time at `06-17 01:40:42.462` (line 26046); `:vpn` process `27094` keeps running and performs recoveries at `06-17 02:15:52`–`02:15:54` (lines 26057-26069); the next main process (`5982`) only appears at `06-17 02:16:00.032` (line 26070) because the **user launched the app**. The main process was dead for ~35 minutes while the tunnel was up. That is the normal steady state for a backgrounded VPN — the main process holds no foreground service and is a cached process, first in line for LMK and for OEM (HyperOS) cleanup.
 
@@ -327,7 +327,7 @@ Same code path. Android defers broadcasts to cached/frozen processes (cached-app
 `PlatformVpnController.android.kt:52-56`: `lastXrayJson` is set only in `connect()` (`:80`), i.e. in-memory, per process instance. If the main process was killed and later restarted for any reason (WorkManager, Firebase, a content provider), the controller is reconstructed with `lastXrayJson == null` and the handler logs `"recover request ignored — no cached config"` and does nothing. The `:vpn` process has the config persisted (`ConnectionParamsStore`), the main process never reads it.
 
 ### P4 — The recovery path destroys the only fallback (persisted params) before it knows the reconnect will succeed.
-`reconnect()` (`PlatformVpnController.android.kt:70`) calls `disconnect()`, which reaches `runDisconnect` → **`paramsStore.clear()`** (`OnthecrowVpnService.kt:311`). After that, `stopForeground(REMOVE)` + `stopSelf()` + `killProcess`. If the subsequent `connect()` fails for any reason (P5), there is no persisted config left, so the `onStartCommand(null)` self-heal branch (`:136-149`) takes the `"standing down"` path. The system is now permanently disconnected with no recovery trigger of any kind. Recovery must never share a code path with deliberate teardown.
+`reconnect()` (`PlatformVpnController.android.kt:70`) calls `disconnect()`, which reaches `runDisconnect` → **`paramsStore.clear()`** (`DeltaVpnService.kt:311`). After that, `stopForeground(REMOVE)` + `stopSelf()` + `killProcess`. If the subsequent `connect()` fails for any reason (P5), there is no persisted config left, so the `onStartCommand(null)` self-heal branch (`:136-149`) takes the `"standing down"` path. The system is now permanently disconnected with no recovery trigger of any kind. Recovery must never share a code path with deliberate teardown.
 
 ### P5 — The reconnect issues a background FGS start after having just torn down the only FGS the UID had.
 `PlatformVpnController.android.kt:106` `startForegroundService(...)`, executed from a `scope.launch` in a process with no visible activity, **after** `reconnect()` waited for `Disconnected` — i.e. after `stopForeground(REMOVE)` + `stopSelf()` already ran in `:vpn`. On Android 12+ that is a background FGS start from a UID that is no longer in `PROCESS_STATE_FOREGROUND_SERVICE` → `ForegroundServiceStartNotAllowedException`.
@@ -335,15 +335,15 @@ Same code path. Android defers broadcasts to cached/frozen processes (cached-app
 *Verified:* the ordering in code. *Inference:* the exception itself is not in the logs, because P1 means the path was never reached in the field. The one exemption the app may hold is the device-idle allowlist (`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, requested at `MainActivity.kt:39,60-66`). From AOSP `ActiveServices`/`ActivityManagerService`, being on the device-idle allowlist yields an FGS-allowed reason (`REASON_DEVICE_IDLE` / `REASON_ALLOWLISTED_PACKAGE`) — so it *does* exempt in practice — but **this is not in the public exemption list and the dialog is user-declinable**. Relying on it is a coin flip per user. Note the app also does not declare `SCHEDULE_EXACT_ALARM`/`USE_EXACT_ALARM`, so the one *documented* background-FGS exemption available to it is unused.
 
 ### P6 — START_STICKY has never once restarted this service in the field.
-Grep for `"sticky restart"` across **every** `vpn-debug*.log` returns **zero hits**. The self-heal branch at `OnthecrowVpnService.kt:136-149` has never executed. Combined with established fact #4 (`06-17 02:16:09.861` "killing :vpn process…" followed by nothing at all until the user acted at `02:16:30.071`), START_STICKY must be treated as non-existent for this service. *Inference on mechanism:* on 12+ a service restarted after process death is brought up without an FGS-start exemption, and a `specialUse` FGS that cannot legally call `startForeground()` is dropped rather than restarted.
+Grep for `"sticky restart"` across **every** `vpn-debug*.log` returns **zero hits**. The self-heal branch at `DeltaVpnService.kt:136-149` has never executed. Combined with established fact #4 (`06-17 02:16:09.861` "killing :vpn process…" followed by nothing at all until the user acted at `02:16:30.071`), START_STICKY must be treated as non-existent for this service. *Inference on mechanism:* on 12+ a service restarted after process death is brought up without an FGS-start exemption, and a `specialUse` FGS that cannot legally call `startForeground()` is dropped rather than restarted.
 
 ### P7 — `lastUnderlying` goes stale during Doze and there is no longer any code to re-query it.
-The working tree **deleted** `refreshUnderlyingFromSystem()` / `queryActiveUnderlying()` (visible in `git diff` of `OnthecrowVpnService.kt`, the block that used to run before each recovery attempt). Nothing replaces it.
+The working tree **deleted** `refreshUnderlyingFromSystem()` / `queryActiveUnderlying()` (visible in `git diff` of `DeltaVpnService.kt`, the block that used to run before each recovery attempt). Nothing replaces it.
 
 **Verified that this matters:** `06-17 01:39:34.280` — `"underlying refresh: STALE 111 -> 101"`. The device went from Wi-Fi netId 111 to cellular netId 101 while the screen was off, and `onAvailable(101)` **never reached the service**; only the explicit re-query caught it. So `ConnectivityManager` callbacks are demonstrably not delivered (or are coalesced away) to this app during Doze. With the re-query removed, `setUnderlyingNetworks()` now stays pinned to a dead `Network` object indefinitely, and `recover()` has no chance of picking a correct upstream even if it worked.
 
 ### P8 — Deferring all recovery while the screen is off is the wrong policy for a VPN.
-`OnthecrowVpnService.kt:609-613` (network change) and `:513-518` (screen off cancels `tunnelJob`). The tun stays up with a dead upstream, so **all** app traffic is black-holed — strictly worse than being disconnected. Every background app that wakes in a Doze maintenance window fails. And because the probe only runs after `SCREEN_ON`, the user's first 1.5 s (probe) + full recovery (several seconds, at best) after unlocking are dead. The battery argument does not hold: the expensive thing is the 8 s polling loop, not a single event-driven re-dial on an actual network change.
+`DeltaVpnService.kt:609-613` (network change) and `:513-518` (screen off cancels `tunnelJob`). The tun stays up with a dead upstream, so **all** app traffic is black-holed — strictly worse than being disconnected. Every background app that wakes in a Doze maintenance window fails. And because the probe only runs after `SCREEN_ON`, the user's first 1.5 s (probe) + full recovery (several seconds, at best) after unlocking are dead. The battery argument does not hold: the expensive thing is the 8 s polling loop, not a single event-driven re-dial on an actual network change.
 
 ### P9 — Missing triggers.
 - `ACTION_DEVICE_IDLE_MODE_CHANGED` (`PowerManager`) — the only reliable Doze enter/exit signal, delivered to runtime receivers, fires without the screen turning on. Completely absent.
@@ -372,7 +372,7 @@ Delete `sendRecoverRequest` / `registerRecoverRequest` (`VpnStatusBroadcast.kt:4
 The `:vpn` process is the one process guaranteed to exist while the tunnel exists, and while it holds a running FGS the **UID** is in `PROCESS_STATE_FOREGROUND_SERVICE` — which is the strongest and most certain FGS-start exemption on 12/13/14/16. Everything below exploits that.
 
 ### F2 — Make the process restart self-driven and legal, with an exact alarm as the restart engine.
-Replace `recover()` (`OnthecrowVpnService.kt:405-413`) with, in order:
+Replace `recover()` (`DeltaVpnService.kt:405-413`) with, in order:
 
 1. `PowerManager.PARTIAL_WAKE_LOCK` acquired with a timeout (~30 s) — held across the whole sequence (fixes P11).
 2. **Re-write** the persisted `ConnectionParams` (never clear them here — fixes P4), plus a `recovery_in_progress` flag and attempt counter.
@@ -393,7 +393,7 @@ The process-kill design exists solely because xray-core's `manger` map survives 
 
 Recommendation: implement F3 as the real fix and F2 as the safety net for whatever the pool patch misses.
 
-### F4 — Fix the triggers (in `registerUnderlyingNetworkCallback`, `OnthecrowVpnService.kt:591-645`).
+### F4 — Fix the triggers (in `registerUnderlyingNetworkCallback`, `DeltaVpnService.kt:591-645`).
 - **Trigger on `onCapabilitiesChanged` with `NET_CAPABILITY_VALIDATED` becoming true on a network `!= lastUnderlying`**, not on bare `onAvailable`. Track `(network, validated)` and only recover once the new link is validated. Cuts the wasted first attempt described in P9.
 - **Trigger on `onLinkPropertiesChanged`** when `lp.linkAddresses` / `lp.routes` change for the *current* underlying network. This is the only signal for a same-netId route change and is currently a pure no-op at `:617-619`.
 - **On `onLost(lastUnderlying)`**, call `applyUnderlyingNetworks(null)` immediately so the VPN falls back to the system default rather than staying pinned to a dead handle.
@@ -419,9 +419,9 @@ Split `runDisconnect(stopService:Boolean)` (`:306-326`) into `runUserDisconnect(
 
 ## 4. Open questions / things I could not verify
 
-1. **No field log exists for the current build.** Grepping every `vpn-debug*.log` for `"requesting main-process reconnect"` and `"send recover request"` returns nothing. The broadcast-based design in the working tree has **never been observed running**. All conclusions about it (P1-P5) are from code reading plus logs of adjacent builds. The decisive experiment: reproduce a handover with the app swiped away, and `adb shell dumpsys activity processes | grep onthecrowvpn` to confirm the main process is absent when `recover()` fires.
+1. **No field log exists for the current build.** Grepping every `vpn-debug*.log` for `"requesting main-process reconnect"` and `"send recover request"` returns nothing. The broadcast-based design in the working tree has **never been observed running**. All conclusions about it (P1-P5) are from code reading plus logs of adjacent builds. The decisive experiment: reproduce a handover with the app swiped away, and `adb shell dumpsys activity processes | grep deltavpn` to confirm the main process is absent when `recover()` fires.
 2. **Whether the device-idle allowlist really exempts background FGS starts on this device/OEM.** My reading of AOSP says yes (`REASON_DEVICE_IDLE`), but it is not in the public exemption list and HyperOS may differ. Experiment: from a cached main process, call `startForegroundService` and catch `ForegroundServiceStartNotAllowedException`, with and without the battery-optimization exemption granted.
-3. **Why exactly START_STICKY never restarts the service** (P6). I infer the restarted service cannot legally call `startForeground()`. `adb shell dumpsys activity services com.onthecrow.onthecrowvpn` immediately after a self-kill, plus `logcat -b all | grep -i "ActivityManager.*onthecrow"`, would show whether AMS scheduled a restart and what it refused.
+3. **Why exactly START_STICKY never restarts the service** (P6). I infer the restarted service cannot legally call `startForeground()`. `adb shell dumpsys activity services com.onthecrow.deltavpn` immediately after a self-kill, plus `logcat -b all | grep -i "ActivityManager.*onthecrow"`, would show whether AMS scheduled a restart and what it refused.
 4. **Whether `manger` is genuinely un-clearable without a process restart.** I could not inspect it — `local-libs/libxray/LibXray.aar` is a binary and the Go source is not vendored. F3's viability hinges on this. Experiment: build libXray from source with an added pool-clear export and measure the re-dial time after `stopXray → clearPool → startXray` on a changed network.
 5. **Android 15/16 `specialUse` FGS restrictions.** I could not confirm whether API 35/36 added a runtime timeout or a `BOOT_COMPLETED` start restriction for `FOREGROUND_SERVICE_TYPE_SPECIAL_USE` (the 15 timeouts I am aware of are `dataSync`/`mediaProcessing`). Worth confirming before relying on F7's boot path. Also unverified: whether Google Play will accept `specialUse` with subtype `vpn` — AOSP has no VPN FGS type, so there is no alternative.
 6. **Exact-alarm quota under deep Doze on this device** (F2/F6's heartbeat). The ~10 min allow-while-idle window is the documented AOSP figure; OEM tuning varies. Measure with `adb shell dumpsys alarm | grep onthecrow` over a long screen-off period.
@@ -435,9 +435,9 @@ I have everything I need. Writing the report.
 
 ---
 
-# libXray / xray-core hysteria2 driver review — OnthecrowVPN Android
+# libXray / xray-core hysteria2 driver review — DeltaVPN Android
 
-**Method note.** I found the full Go source tree for the vendored build at `/Users/onthecrow/Documents/Projects/OnthecrowVPN/.libxray-build/libXray` (libXray `v26.3.27`, per `scripts/build-libxray-android.sh:4`), and the resolved `xray-core v1.260327.0` + `apernet/quic-go v0.59.1-0.20260217092621` sources in the Go module cache. So almost everything below is **verified against source**, not inferred. Inferences are marked.
+**Method note.** I found the full Go source tree for the vendored build at `/Users/onthecrow/Documents/Projects/DeltaVPN/.libxray-build/libXray` (libXray `v26.3.27`, per `scripts/build-libxray-android.sh:4`), and the resolved `xray-core v1.260327.0` + `apernet/quic-go v0.59.1-0.20260217092621` sources in the Go module cache. So almost everything below is **verified against source**, not inferred. Inferences are marked.
 
 The single most important finding: **the hysteria pool is not the blocker, and the process-kill design is solving the wrong problem.** Details in §2.1.
 
@@ -487,17 +487,17 @@ So a pooled entry does **not** permanently pin a dead connection. It pins it exa
   quic-go semantics confirmed: `interface.go:156-159` ("If set to 0, then no keep alive is sent") and `connection.go:862` (`if c.config.KeepAlivePeriod == 0 || ... { return }`).
 - `DisablePathManager: true` (`dialer.go:231`) → **QUIC connection migration is explicitly disabled** for this transport (`quic-go/interface.go:183-185`: *"for hysteria2 port hopping, direct change remote address without connection migration logic"*).
 
-**And `QuicParams` is nil for this user's config.** `share/hysteria_mask.go:10-36` only constructs `quicParams` when the share link carries `upmbps`/`downmbps`/`ports`; it *never* sets `MaxIdleTimeout` or `KeepAlivePeriod` under any circumstance. The field is under `streamSettings.finalmask.quicParams` (`infra/conf/transport_internet.go:1719-1723`, `:1734`). And `XrayConfigSanitizer.withTunInbound` (`core/xray/src/commonMain/kotlin/com/onthecrow/onthecrowvpn/xray/XrayConfigSanitizer.kt:51-110`) only injects the tun inbound and the log block — **it never touches `streamSettings`**. The field's JSON tags are `infra/conf/transport_internet.go:630-643`; validation bounds `maxIdleTimeout ∈ [4,120]`, `keepAlivePeriod ∈ [2,60]` at `:1951-1956`.
+**And `QuicParams` is nil for this user's config.** `share/hysteria_mask.go:10-36` only constructs `quicParams` when the share link carries `upmbps`/`downmbps`/`ports`; it *never* sets `MaxIdleTimeout` or `KeepAlivePeriod` under any circumstance. The field is under `streamSettings.finalmask.quicParams` (`infra/conf/transport_internet.go:1719-1723`, `:1734`). And `XrayConfigSanitizer.withTunInbound` (`core/xray/src/commonMain/kotlin/com/onthecrow/deltavpn/xray/XrayConfigSanitizer.kt:51-110`) only injects the tun inbound and the log block — **it never touches `streamSettings`**. The field's JSON tags are `infra/conf/transport_internet.go:630-643`; validation bounds `maxIdleTimeout ∈ [4,120]`, `keepAlivePeriod ∈ [2,60]` at `:1951-1956`.
 
 Log corroboration: the connect at `vpn-debug (13).log 02:16:32` produces `configBytes=1101` and `xray (4).log:17` reports `congestion bbr` — i.e. the `"brutal", ""` branch with `serverAuto == "auto"` (`dialer.go:303-310`), consistent with a bare `hysteria2://` link carrying no bandwidth params and therefore **no `finalmask` at all**.
 
 ### 1.4 Android control flow as implemented
 
-- **Connect**: `PlatformVpnController.android.kt:79-118` → `awaitVpnProcessGone` (3 s, 50 ms poll, `:144-158`) → `startForegroundService(ACTION_CONNECT)`. In `:vpn`: `OnthecrowVpnService.kt:118-128` → `runConnect` (`:175-220`) → `Builder().establish()` (`:190-201`) → `startXrayOnTun` (`:227-250`): `master.dup().detachFd()` → `setTunFd(fd)` → `xrayEngine.start()`.
+- **Connect**: `PlatformVpnController.android.kt:79-118` → `awaitVpnProcessGone` (3 s, 50 ms poll, `:144-158`) → `startForegroundService(ACTION_CONNECT)`. In `:vpn`: `DeltaVpnService.kt:118-128` → `runConnect` (`:175-220`) → `Builder().establish()` (`:190-201`) → `startXrayOnTun` (`:227-250`): `master.dup().detachFd()` → `setTunFd(fd)` → `xrayEngine.start()`.
 - **Network change**: `NOT_VPN|INTERNET` best-matching callback (`:591-645`). `onAvailable` with a different `Network` → `setUnderlyingNetworks` → if `screenOn`, `startTunnelJob(FORCE_RECOVER)` (`:609-613`); if screen off, deferred.
 - **Doze exit**: `ACTION_SCREEN_ON` (`:519-523`) → `PROBE_FIRST` → `probeTunnel(1500 ms)` DNS-over-UDP to `1.1.1.1:53` (`:462-474`).
 - **Keepalive**: `keepAliveLoop` (`:434-450`), probe every **8 s**, **2** consecutive failures → `recover`. Cancelled on `SCREEN_OFF` (`:513-518`).
-- **Recovery**: `recover()` (`:405-413`) — debounced 6 s via `SharedPreferences` — sends a broadcast (`VpnStatusBroadcast.sendRecoverRequest`, `VpnStatusBroadcast.kt:45-48`) to the **main process**, which runs `disconnect() → await Disconnected (4 s cap) → connect()` (`PlatformVpnController.android.kt:68-77`). `runDisconnect` kills `:vpn` 300 ms later (`OnthecrowVpnService.kt:328-337`).
+- **Recovery**: `recover()` (`:405-413`) — debounced 6 s via `SharedPreferences` — sends a broadcast (`VpnStatusBroadcast.sendRecoverRequest`, `VpnStatusBroadcast.kt:45-48`) to the **main process**, which runs `disconnect() → await Disconnected (4 s cap) → connect()` (`PlatformVpnController.android.kt:68-77`). `runDisconnect` kills `:vpn` 300 ms later (`DeltaVpnService.kt:328-337`).
 - Constants: `PROCESS_DEATH_DELAY_MS=300`, `RECOVERY_KILL_DEBOUNCE_MS=6000`, `PROBE_TIMEOUT_MS=1500`, `KEEPALIVE_INTERVAL_MS=8000`, `KEEPALIVE_FAILS_BEFORE_RECOVER=2` (`:718-734`).
 - Manifest (`androidApp/src/main/AndroidManifest.xml`): `foregroundServiceType="specialUse"` + subtype `vpn` (`:51`, `:58-60`), `android:process=":vpn"` (`:53`). **No `WAKE_LOCK`, no `RECEIVE_BOOT_COMPLETED`, no `SCHEDULE_EXACT_ALARM`.**
 
@@ -521,19 +521,19 @@ Ranked by threat to the ~100 % goal.
 
 **Evidence:** `xray (4).log:12,17` shows exactly one `dialing to udp:78.17.84.51:1935` (21:16:32.575) → `congestion bbr` (21:16:32.764) for the whole session — a fresh dial costs **~190 ms**, not 30 s. Established fact #3 ("no fresh dial for ~28 s") is precisely the 30 s idle timer, off by the elapsed time since the last inbound packet.
 
-**Consequence:** the premise in `OnthecrowVpnService.kt:169-174` and `:394-399` — *"an in-process xray restart reuses the stale pooled connection and takes ~30 s"* — is **true as observed but wrong as diagnosed**. It is not the pool that is stale; it is that nothing has told quic-go the connection is dead. The process kill works only because it happens to bypass the timer. Setting `maxIdleTimeout: 5` + `keepAlivePeriod: 2` makes the pool self-heal in ~5 s **with no process kill, no service restart, and no cross-process broadcast**.
+**Consequence:** the premise in `DeltaVpnService.kt:169-174` and `:394-399` — *"an in-process xray restart reuses the stale pooled connection and takes ~30 s"* — is **true as observed but wrong as diagnosed**. It is not the pool that is stale; it is that nothing has told quic-go the connection is dead. The process kill works only because it happens to bypass the timer. Setting `maxIdleTimeout: 5` + `keepAlivePeriod: 2` makes the pool self-heal in ~5 s **with no process kill, no service restart, and no cross-process broadcast**.
 
 ---
 
 ### **P2 — Recovery depends on the main process being alive and holding in-memory state. After Doze it very often is not.** *(Critical — this is the Doze-exit failure)*
 
-**Where:** `OnthecrowVpnService.kt:412` → `VpnStatusBroadcast.kt:45-48` → `PlatformVpnController.android.kt:42-44, 47-62`.
+**Where:** `DeltaVpnService.kt:412` → `VpnStatusBroadcast.kt:45-48` → `PlatformVpnController.android.kt:42-44, 47-62`.
 
 **Mechanism:** `registerRecoverRequest` uses `Context.registerReceiver` — a **runtime-registered** receiver. Runtime receivers exist only while the process lives; they are not in the manifest, so the broadcast **cannot start the main process**. `:vpn` is a foreground service and survives Doze; the main process is a plain backgrounded app and is a prime LMK/Doze eviction candidate (aggressively so on HyperOS). When it has been killed:
 - the broadcast is delivered to nobody;
 - `recover()` has already burned its 6 s debounce token (`:410` before `:412`), and worse, `recordRecoveryKill` persists to `SharedPreferences`, so the tunnel stays dead until the *next* keepalive pair (≥16 s) and then fails again identically, forever.
 
-Even if the main process **is** alive, `lastXrayJson` is a `@Volatile` in-memory field (`:27-28`). Any main-process restart between connect and recovery leaves it `null` → `"recover request ignored — no cached config"` (`:53-56`). The `:vpn` process *has* the config persisted (`ConnectionParamsStore`, `OnthecrowVpnService.kt:102, 125`) — the process that can't act holds the data; the process that acts doesn't.
+Even if the main process **is** alive, `lastXrayJson` is a `@Volatile` in-memory field (`:27-28`). Any main-process restart between connect and recovery leaves it `null` → `"recover request ignored — no cached config"` (`:53-56`). The `:vpn` process *has* the config persisted (`ConnectionParamsStore`, `DeltaVpnService.kt:102, 125`) — the process that can't act holds the data; the process that acts doesn't.
 
 **Inference (marked):** I cannot prove main-process death from log 13 (its main process, pid 5982, stays alive throughout). This is read from the architecture. The experiment in §4.1 settles it.
 
@@ -543,7 +543,7 @@ Even if the main process **is** alive, `lastXrayJson` is a `@Volatile` in-memory
 
 ### **P3 — On network change, recovery is requested but the tunnel is never repaired in-process; the whole repair is outsourced across a process boundary that can silently drop it.** *(Critical — this is the Wi-Fi↔cell failure)*
 
-**Where:** `OnthecrowVpnService.kt:379` (`FORCE_RECOVER → recover(reason)`), `:405-413`.
+**Where:** `DeltaVpnService.kt:379` (`FORCE_RECOVER → recover(reason)`), `:405-413`.
 
 **Evidence (log 13, previous revision but the same failure shape):**
 ```
@@ -561,7 +561,7 @@ The current revision replaced self-kill with a broadcast, which removes the STAR
 
 ### **P4 — The screen-off gate makes Doze recovery structurally impossible, and the wake path has no wakelock.** *(High)*
 
-**Where:** `OnthecrowVpnService.kt:513-518` (SCREEN_OFF cancels `tunnelJob`), `:609-613` (network change ignored while screen off), `:486-490`.
+**Where:** `DeltaVpnService.kt:513-518` (SCREEN_OFF cancels `tunnelJob`), `:609-613` (network change ignored while screen off), `:486-490`.
 
 While the screen is off — exactly when Doze kills the QUIC connection — there is **zero** health machinery. Recovery is deferred to `SCREEN_ON` (`:519-523`), which then does `PROBE_FIRST` with a 1500 ms budget. So on every unlock the user eats: probe timeout (1.5 s) → broadcast → main-process wake → `disconnect()` → `awaitVpnProcessGone` (up to 3 s) → status await (up to 4 s) → new process → establish → **plus** a first-packet dial. Best case ~1 s, worst case ~9 s of dead network in the foreground, and that is the *success* path.
 
@@ -583,7 +583,7 @@ Also `manger.m` grows unbounded — entries are never deleted (`dialer.go:428-43
 
 ### **P6 — `stopXray()` closes a tun fd that Go's gVisor endpoint may still be reading.** *(Medium — latent, becomes serious with in-process restart)*
 
-**Where:** `OnthecrowVpnService.kt:299-304`; `proxy/tun/tun_android.go:24-49`.
+**Where:** `DeltaVpnService.kt:299-304`; `proxy/tun/tun_android.go:24-49`.
 
 `AndroidTun.Close()` is **a no-op — it does not close `t.tunFd`** (`tun_android.go:48-50`). `NewTun` wraps the fd in a gVisor `fdbased` endpoint (`:52-58`) with reader goroutines. Kotlin then closes the fd from underneath it via `ParcelFileDescriptor.adoptFd(fd).close()` (`:302`), immediately after `xrayEngine.stop()` returns. `core.Instance.Close()` does not join those goroutines. The fd number is then free for reuse — the next `establish()` or `dup()` can be handed the same number while a stale Go reader still holds it.
 
@@ -603,7 +603,7 @@ It would not help regardless: the protected socket is created via `lc.ListenPack
 
 ### **P8 — `runConnect` starts xray before the underlying network is known.** *(Low)*
 
-`OnthecrowVpnService.kt:185` calls `applyUnderlyingNetworks(lastUnderlying)` with `lastUnderlying == null` on a fresh process (log: `02:16:32.005 runConnect: ... underlying=null` → `setUnderlyingNetworks(default)`), and `startMonitoring()` (which registers the callback) runs only **after** xray starts (`:203-207`). The callback then lands at `02:16:32.396`, 255 ms later. Benign today only because hysteria dials lazily on first traffic (`dialer.go:172` is reached from `c.tcp()`/`c.udp()`, not from instance start). It becomes a real race the moment anything dials eagerly.
+`DeltaVpnService.kt:185` calls `applyUnderlyingNetworks(lastUnderlying)` with `lastUnderlying == null` on a fresh process (log: `02:16:32.005 runConnect: ... underlying=null` → `setUnderlyingNetworks(default)`), and `startMonitoring()` (which registers the callback) runs only **after** xray starts (`:203-207`). The callback then lands at `02:16:32.396`, 255 ms later. Benign today only because hysteria dials lazily on first traffic (`dialer.go:172` is reached from `c.tcp()`/`c.udp()`, not from instance start). It becomes a real race the moment anything dials eagerly.
 
 ---
 
@@ -617,7 +617,7 @@ It would not help regardless: the protected socket is created via `lc.ListenPack
 
 ### 3.1 — Inject `finalmask.quicParams` with an aggressive idle timeout and an explicit keepalive *(fixes P1; highest value/effort ratio in this report)*
 
-**Where:** `core/xray/src/commonMain/kotlin/com/onthecrow/onthecrowvpn/xray/XrayConfigSanitizer.kt` — extend `withTunInbound` (or add a `withQuicParams` step applied at `OnthecrowVpnService.kt:235`) to merge into every outbound with `streamSettings.network == "hysteria"`:
+**Where:** `core/xray/src/commonMain/kotlin/com/onthecrow/deltavpn/xray/XrayConfigSanitizer.kt` — extend `withTunInbound` (or add a `withQuicParams` step applied at `DeltaVpnService.kt:235`) to merge into every outbound with `streamSettings.network == "hysteria"`:
 
 ```jsonc
 "streamSettings": {
@@ -648,14 +648,14 @@ It would not help regardless: the protected socket is created via `lc.ListenPack
 
 ### 3.2 — Move recovery back into `:vpn`, in-process *(fixes P2, P3, and most of P4)*
 
-Once §3.1 lands, the process kill is no longer needed to clear the pool, because the pool clears itself. Replace `recover()` (`OnthecrowVpnService.kt:405-413`) with a local, `suspend`, mutex-guarded ladder — **no broadcast, no main process, no `START_STICKY`**:
+Once §3.1 lands, the process kill is no longer needed to clear the pool, because the pool clears itself. Replace `recover()` (`DeltaVpnService.kt:405-413`) with a local, `suspend`, mutex-guarded ladder — **no broadcast, no main process, no `START_STICKY`**:
 
 1. **Tier 0 (~0 ms, most cases):** on `FORCE_RECOVER`, `setUnderlyingNetworks(newNetwork)` (already done at `:606`) and then simply **wait and re-probe**. Within ~5 s the pooled conn is `StatusInactive` and the next probe packet triggers a fresh protected dial on the new link. Probe every 1 s for 8 s.
 2. **Tier 1 (if Tier 0 fails):** `stopXray()` → `setTunFd(dup)` → `xrayEngine.start()`, **keeping `tunInterface` open** (the code already does this correctly — `:222-231`, `:339-346`). Must fix P6 and P9 first.
 3. **Tier 2 (if Tier 1 fails twice):** full rebuild — close and re-`establish()` the tun, then Tier 1.
 4. **Tier 3 (last resort only):** the existing cross-process disconnect→connect.
 
-Keep the main-process broadcast path as Tier 3 only, and make it survivable: register the recover receiver **in the manifest** (`androidApp/src/main/AndroidManifest.xml`) with an explicit `<intent-filter>` so it can cold-start the main process, and **read the config from `ConnectionParamsStore`** in `onRecoverRequested` (`PlatformVpnController.android.kt:52-56`) instead of trusting `lastXrayJson`. Also move `recordRecoveryKill()` (`OnthecrowVpnService.kt:410`) to *after* a confirmed successful recovery, so a dropped request doesn't burn the debounce.
+Keep the main-process broadcast path as Tier 3 only, and make it survivable: register the recover receiver **in the manifest** (`androidApp/src/main/AndroidManifest.xml`) with an explicit `<intent-filter>` so it can cold-start the main process, and **read the config from `ConnectionParamsStore`** in `onRecoverRequested` (`PlatformVpnController.android.kt:52-56`) instead of trusting `lastXrayJson`. Also move `recordRecoveryKill()` (`DeltaVpnService.kt:410`) to *after* a confirmed successful recovery, so a dropped request doesn't burn the debounce.
 
 **Reliability on modern Android:** everything in Tiers 0–2 happens inside a process that is already a running foreground service holding the tun fd. It touches no FGS background-start restriction (Android 12+), no BAL, no `START_STICKY`, no broadcast delivery, no `runningAppProcesses` polling. It is the only tier that is architecturally immune to the failures in P2.
 
@@ -664,7 +664,7 @@ Keep the main-process broadcast path as Tier 3 only, and make it survivable: reg
 ### 3.3 — Run the health machinery while the screen is off, with a wakelock *(fixes the rest of P4)*
 
 - Add `<uses-permission android:name="android.permission.WAKE_LOCK" />` and hold a `PARTIAL_WAKE_LOCK` **for the duration of a recovery attempt only** (acquire at the top of the tier ladder, release in a `finally`, with a hard timeout of ~20 s). Without it the CPU can suspend between `SCREEN_ON` and the reconnect completing.
-- Do not cancel `tunnelJob` on `SCREEN_OFF` (`OnthecrowVpnService.kt:513-518`). Instead **slow it down**: keep the 8 s cadence while screen-on, drop to ~60 s while screen-off. With `keepAlivePeriod: 2` the QUIC layer is already keeping itself honest; the probe is only there to *notice*. A 60 s probe in Doze is cheap and it makes "VPN was dead the whole night" impossible.
+- Do not cancel `tunnelJob` on `SCREEN_OFF` (`DeltaVpnService.kt:513-518`). Instead **slow it down**: keep the 8 s cadence while screen-on, drop to ~60 s while screen-off. With `keepAlivePeriod: 2` the QUIC layer is already keeping itself honest; the probe is only there to *notice*. A 60 s probe in Doze is cheap and it makes "VPN was dead the whole night" impossible.
 - Stop gating network-change recovery on `screenOn` (`:609-613`). A handover while the screen is off is exactly the case that must be handled — and post-§3.1 it costs a single re-dial.
 - **Doze caveat:** even with the battery-optimization exemption (fact #7), deep Doze parks the radio between maintenance windows, so the 2 s keepalive will not actually reach the wire continuously. That is fine and in fact desirable: the connection dies, `status()` goes `StatusInactive`, and the first real packet after wake re-dials immediately. The failure mode we are eliminating is *dead but believed alive*, not *dead*.
 
@@ -685,7 +685,7 @@ If you ever want a true flush, it is a genuinely small patch: add `func CloseAll
 
 ### 3.5 — Fix the tun-fd handoff *(P6)*
 
-In `OnthecrowVpnService.kt:299-304`, do not close the dup'd fd immediately. `AndroidTun.Close()` is a no-op (`tun_android.go:48-50`) and xray's gVisor readers are not joined by `Instance.Close()`. Either:
+In `DeltaVpnService.kt:299-304`, do not close the dup'd fd immediately. `AndroidTun.Close()` is a no-op (`tun_android.go:48-50`) and xray's gVisor readers are not joined by `Instance.Close()`. Either:
 
 - **(a)** never close the dup — leak one fd per xray restart and let process death reclaim it (bounded, and safe); or
 - **(b)** delay the close by ~200 ms after `stopXray()` returns and, critically, **always call `setTunFd()` with a fresh dup before every `start()`** (already correct at `:229-231` — preserve that invariant, because the env var persists for the process lifetime per `xray/xray.go:51-53`).
@@ -696,18 +696,18 @@ I'd take (a): an fd is cheap, a recycled fd number under a live reader is a heis
 
 ### 3.6 — Small correctness fixes
 
-- `OnthecrowVpnService.kt:621-626`: do not null `lastUnderlying` on `onLost`. Track the last *available* network and compare `netId`s, so a Wi-Fi flap (`02:16:09.625/.705`) doesn't read as a change (P3 tail).
+- `DeltaVpnService.kt:621-626`: do not null `lastUnderlying` on `onLost`. Track the last *available* network and compare `netId`s, so a Wi-Fi flap (`02:16:09.625/.705`) doesn't read as a change (P3 tail).
 - `PlatformXrayEngine.android.kt:103`: make `registerProtectControllers` idempotent — a process-level `AtomicBoolean` guard (P9).
 - `PlatformVpnController.android.kt:31, 48, 57`: replace `reconnecting: Boolean` with an `AtomicBoolean.compareAndSet` (P2 tail).
-- `OnthecrowVpnService.kt:185, 203-207`: call `registerUnderlyingNetworkCallback()` *before* `startXrayOnTun`, so `setUnderlyingNetworks` is correct before any dial can happen (P8).
+- `DeltaVpnService.kt:185, 203-207`: call `registerUnderlyingNetworkCallback()` *before* `startXrayOnTun`, so `setUnderlyingNetworks` is correct before any dial can happen (P8).
 
 ---
 
 ## 4. Open questions / things I could not verify
 
-1. **Is the main process actually dead at recovery time?** This is the load-bearing assumption behind P2 and I could not confirm it from log 13 (pid 5982 survives throughout, and that log predates the broadcast-based revision). **Experiment:** after connecting, run `adb shell am kill com.onthecrow.onthecrowvpn.dev` (kills the main process, leaves the FGS `:vpn`), then toggle Wi-Fi. If `:vpn` logs `send recover request` with no matching `CTRL` line, P2 is confirmed as the Doze failure mode. Takes two minutes and would settle the single most consequential question here.
+1. **Is the main process actually dead at recovery time?** This is the load-bearing assumption behind P2 and I could not confirm it from log 13 (pid 5982 survives throughout, and that log predates the broadcast-based revision). **Experiment:** after connecting, run `adb shell am kill com.onthecrow.deltavpn.dev` (kills the main process, leaves the FGS `:vpn`), then toggle Wi-Fi. If `:vpn` logs `send recover request` with no matching `CTRL` line, P2 is confirmed as the Doze failure mode. Takes two minutes and would settle the single most consequential question here.
 
-2. **Is `finalmask.quicParams` actually reaching the built config today?** I inferred it is absent from `share/hysteria_mask.go:12` plus the bare `hysteria2://` link plus `configBytes=1101`, but I never saw the generated JSON. **Experiment:** log the full `runtimeJson` once at `OnthecrowVpnService.kt:245` (it's 1101 bytes) and confirm there is no `finalmask` key. If one is present, §3.1 becomes a merge rather than an insert — the code must handle both.
+2. **Is `finalmask.quicParams` actually reaching the built config today?** I inferred it is absent from `share/hysteria_mask.go:12` plus the bare `hysteria2://` link plus `configBytes=1101`, but I never saw the generated JSON. **Experiment:** log the full `runtimeJson` once at `DeltaVpnService.kt:245` (it's 1101 bytes) and confirm there is no `finalmask` key. If one is present, §3.1 becomes a merge rather than an insert — the code must handle both.
 
 3. **The exact wall-clock between handover and stall-end.** Fact #3 says "~28 s" and I attribute it to the 30 s idle timer, but that requires knowing the time since the last *received* packet. The current logs don't show a completed 30 s recovery for me to measure. **Experiment:** set `maxIdleTimeout: 5` and re-run the Wi-Fi→cell test with xray at `debug`. If the second `dialing to udp:...` appears ~5 s after the handover instead of ~28 s, P1 is proven outright and §3.2 is unblocked.
 
@@ -725,7 +725,7 @@ I'd take (a): an fd is cheap, a recycled fd number under a live reader is a heis
 
 *(Everything below is read from the working tree, not from the colleagues' summaries. Line numbers are current.)*
 
-**Tun construction.** `OnthecrowVpnService.kt:190-201`:
+**Tun construction.** `DeltaVpnService.kt:190-201`:
 
 ```
 Builder().setSession(...).setMtu(1500)
@@ -762,7 +762,7 @@ IPv4 only. No `addAddress` for IPv6, no `::/0` route, no IPv6 DNS server. MTU 15
 
 ### P1 — The health probe returns false-positive "healthy" verdicts by escaping the tunnel entirely, and it does so *specifically in the window recovery runs in*. This is the reason recovery stops one step short of working. **(Critical, and neither colleague report found it)**
 
-**Where:** `OnthecrowVpnService.kt:462-474`, in combination with the tun rebuild at `:188`/`:340-346`.
+**Where:** `DeltaVpnService.kt:462-474`, in combination with the tun rebuild at `:188`/`:340-346`.
 
 **Evidence — this is proven, not inferred.** Every genuine probe appears in xray's tun reader log as `proxy/tun: processing from udp:10.77.0.2:<port> to udp:1.1.1.1:53`. Correlating `vpn-debug (13).log` with `xray (3).log` (xray runs 5 h behind):
 
@@ -888,7 +888,7 @@ Ordered by value. The first two are the actual fix; the rest remove the remainin
 
 ### F1 — Make the probe honest. Assert the egress path, don't infer it from a reply.
 
-`OnthecrowVpnService.kt:462-474`. Three changes, all cheap:
+`DeltaVpnService.kt:462-474`. Three changes, all cheap:
 
 ```kotlin
 private fun probeTunnel(timeoutMs: Int): Boolean = runCatching {
@@ -945,7 +945,7 @@ exported through a libXray wrapper and called from `PlatformXrayEngine.stop()` r
 
 ### F4 — Add IPv6 to the tun, or explicitly blackhole it.
 
-`OnthecrowVpnService.kt:190-201`:
+`DeltaVpnService.kt:190-201`:
 ```kotlin
 .addAddress("fd00:1:2:3::1", 128)   // ULA, as sing-box/Outline do
 .addRoute("::", 0)
@@ -997,7 +997,7 @@ I re-verified everything below in the working tree and in `vpn-debug (13).log` m
 
 ## 0. Three facts I established during grooming that change the shape of the debate
 
-**Fact G1 — the main process is provably killed while the tunnel runs, and broadcasts to it are provably deferred 39–68 s.** In `vpn-debug (13).log`: main pid **26986** logs last at `01:40:42.462`; the next main-process line is pid **5982** at `02:16:00`. Different pid = the process was killed. And the four `Connected` broadcasts sent by `:vpn` at `01:39:34.363 / 01:39:39.444 / 01:39:58.579 / 01:40:03.648` are all received in one batch at `01:40:42.460–.462` — **68 s / 63 s / 44 s / 39 s** of cached-process broadcast deferral. This is not inference any more. **Any design that routes recovery through `sendBroadcast` to a runtime-registered receiver in the main process is dead on arrival.** That kills the current `recover()` (`OnthecrowVpnService.kt:405-413` → `VpnStatusBroadcast.kt:45-48` → `PlatformVpnController.android.kt:42-44`) outright, and it also kills Report B's §3.2 "Tier 3" and Report C's F6 fallback as written.
+**Fact G1 — the main process is provably killed while the tunnel runs, and broadcasts to it are provably deferred 39–68 s.** In `vpn-debug (13).log`: main pid **26986** logs last at `01:40:42.462`; the next main-process line is pid **5982** at `02:16:00`. Different pid = the process was killed. And the four `Connected` broadcasts sent by `:vpn` at `01:39:34.363 / 01:39:39.444 / 01:39:58.579 / 01:40:03.648` are all received in one batch at `01:40:42.460–.462` — **68 s / 63 s / 44 s / 39 s** of cached-process broadcast deferral. This is not inference any more. **Any design that routes recovery through `sendBroadcast` to a runtime-registered receiver in the main process is dead on arrival.** That kills the current `recover()` (`DeltaVpnService.kt:405-413` → `VpnStatusBroadcast.kt:45-48` → `PlatformVpnController.android.kt:42-44`) outright, and it also kills Report B's §3.2 "Tier 3" and Report C's F6 fallback as written.
 
 **Fact G2 — Report B's proposed in-process tier ladder has already been shipped and has already failed in the field.** The `01:39:32 → 01:40:03` sequence in log 13 is *not* the current build. It is an earlier build that had exactly what B §3.2 proposes: `recover (screen on) attempt 1/4 … attempt 2/4`, `runConnect: restart=true forceFull=true tunUp=true`, `underlying refresh: STALE 111 -> 101`, in-process xray restart, retry ladder. It produced: attempt 1 "not healthy", attempt 2 → **`tunnel probe OK after 39ms` → `tunnel healthy — done`** → keepalive failed 9.5 s later → identical cycle → false "healthy" again at `01:40:03.687`. So the in-process ladder is not a new idea to be evaluated on paper; it was tried, and it lost to (a) the stale QUIC client and (b) a lying probe. **B §3.2 must not be re-proposed without F3(a)+F1 landing first.** Report B did not know this log was a different build; that is the single biggest error across the three reports.
 
@@ -1012,7 +1012,7 @@ I re-verified everything below in the working tree and in `vpn-debug (13).log` m
 | C1 | **B P1**: the 30 s stall is the QUIC idle timer and `maxIdleTimeout:5 + keepAlivePeriod:2` largely cures it. **C P2**: the timer runs on `CLOCK_MONOTONIC`, which is frozen across suspend, so post-Doze it yields "5 s after wake", not "5 s after the link died"; the 2 s keepalive cannot hold a NAT mapping through deep sleep. | **C is right, decisively.** Linux `CLOCK_MONOTONIC` does not advance across suspend (that is `CLOCK_BOOTTIME`); Go's runtime timers use `CLOCK_MONOTONIC`. C's arithmetic (`20:40:02.834 − 20:39:32.751 = 30.08 s` measured **from screen-on**, not from the last packet) is the decisive evidence and B has no counter-measurement. The config change is still worth shipping — it fixes the *screen-on* handover — but it is a latency mitigation, not a reliability fix. B's framing ("makes P1/P2/P4/P5/P6/P11 moot") is wrong. |
 | C2 | **A P1/P2** and **B P2**: recovery-by-broadcast is broken because the main process is dead. **B** marks it "inference — I cannot prove main-process death from log 13". | **Confirmed as fact, not inference** — see G1 (pid 26986 → 5982, plus the 39–68 s deferral batch). B's caveat is now obsolete. |
 | C3 | **A F4** says restore `refreshUnderlyingFromSystem()` because `setUnderlyingNetworks` makes protected sockets follow the network. **C P4** says that is false — it is metadata/accounting only. | **C is right and I concede my own framing was wrong.** `setUnderlyingNetworks` feeds the VPN `NetworkAgent`'s transports/capabilities/`NetworkStats` attribution; it does not touch any socket's fwmark or routing table. A `protect()`ed socket follows the **system default network**. The re-query must be restored anyway — but as a *detector* of handovers we slept through (`01:39:34.280 underlying refresh: STALE 111 -> 101`), not as a routing fix. |
-| C4 | **C P3** says "the tun is destroyed and rebuilt on every recovery". **A/B** describe the tun as held open across re-dials. | **C is right about the code, both others are reading a stale comment.** `runConnect` calls `stopTunnel()` at `OnthecrowVpnService.kt:188`, and `stopTunnel()` closes the master `tunInterface`. The doc comment on `startXrayOnTun` ("we dup so xray can be stopped/restarted on every re-dial without ever closing the master") describes a `keepTun` path that **no longer exists in the tree** — there is no in-process re-dial caller at all in the current build. That comment is now actively misleading and should be deleted or the path restored. |
+| C4 | **C P3** says "the tun is destroyed and rebuilt on every recovery". **A/B** describe the tun as held open across re-dials. | **C is right about the code, both others are reading a stale comment.** `runConnect` calls `stopTunnel()` at `DeltaVpnService.kt:188`, and `stopTunnel()` closes the master `tunInterface`. The doc comment on `startXrayOnTun` ("we dup so xray can be stopped/restarted on every re-dial without ever closing the master") describes a `keepTun` path that **no longer exists in the tree** — there is no in-process re-dial caller at all in the current build. That comment is now actively misleading and should be deleted or the path restored. |
 | C5 | **C P1** (probe escapes the tun and returns a false "healthy"). A and B did not find it. | **C is right that the sensor lies; I cannot fully adjudicate the mechanism.** The correlation in log 13 is airtight and I re-read `probeTunnel` (`:462-474`) to confirm the two enabling defects: the `DatagramSocket` is never `connect()`ed (any stray datagram from any source counts) and `PROBE_DNS_TXID` is built into the query and **never checked in the response**. The causal story ("`establish()` returns before netd installs the per-UID rules") is plausible and matches the ≤ 40 ms-after-establish signature, but I can offer a second candidate in the same family (ConnectivityService tearing down the old VPN `NetworkAgent` and re-registering, briefly leaving the UID on the physical default). **It does not matter which**: C's F1 fix — assert `socket.localAddress == 10.77.0.2` after `connect()` — is correct under *both* mechanisms. Ship it. |
 | C6 | **A P6 / established fact #4**: START_STICKY never restarts the service. **C/B** accept it. | **All three overclaim.** See G3. Correct statement: unbounded and escalating restart latency; unusable as a recovery engine; not proven to be a hard failure. |
 | C7 | **B §3.5(b)** (delay the dup'd-fd close by ~200 ms) vs **C F2** (never close it, leak one fd per restart). | **C is right.** A timed delay against un-joined gVisor reader goroutines is a race you cannot prove you won, and C observed the fd numbers actually recycling (`101/102/103` reused across cycles). Leak it; process death reclaims. |
@@ -1030,7 +1030,7 @@ I re-verified everything below in the working tree and in `vpn-debug (13).log` m
 
 **A-F7 / C-F6 (always-on VPN + lockdown).** Not refutable as a *mechanism* — it genuinely makes the system the restart engine and makes gaps fail closed instead of leaking. But it is a user setting with **no programmatic grant and no public read API**, so you cannot detect whether it is on, cannot require it, and cannot ship a design that assumes it. Recommendation-only. It does not count toward the 100 % target.
 
-**B-§3.1 / C-F3(c) (`finalmask.quicParams: {maxIdleTimeout:5, keepAlivePeriod:2}`).** *Flagging explicitly per the brief: this is an **unverified libXray/xray config field** as far as anything observed at runtime.* The field names were read from source, which is good, but nobody has seen the emitted 1101-byte JSON, and `XrayConfigSanitizer` silently passing an unknown key through `finalmask` would look identical to success. **Gate it behind a one-line runtime assertion** (log the emitted `runtimeJson` once at `OnthecrowVpnService.kt:245`, and check `xray.log` for a changed idle-timeout behaviour) before any other change depends on it. Additional refutations: it is a no-op if the server advertises lower; it must **merge**, not overwrite, or it silently downgrades brutal → BBR; and per C1 it does nothing for the Doze case.
+**B-§3.1 / C-F3(c) (`finalmask.quicParams: {maxIdleTimeout:5, keepAlivePeriod:2}`).** *Flagging explicitly per the brief: this is an **unverified libXray/xray config field** as far as anything observed at runtime.* The field names were read from source, which is good, but nobody has seen the emitted 1101-byte JSON, and `XrayConfigSanitizer` silently passing an unknown key through `finalmask` would look identical to success. **Gate it behind a one-line runtime assertion** (log the emitted `runtimeJson` once at `DeltaVpnService.kt:245`, and check `xray.log` for a changed idle-timeout behaviour) before any other change depends on it. Additional refutations: it is a no-op if the server advertises lower; it must **merge**, not overwrite, or it silently downgrades brutal → BBR; and per C1 it does nothing for the Doze case.
 
 **B-§3.2 (in-process tier ladder as the primary recovery).** **Refuted by G2** — this exact design shipped and failed in the field on `06-17 01:39`. It becomes viable only after C-F1 (honest probe) and C-F3(a) (real pool flush) land. Its "Tier 3" fallback (manifest-register the recover receiver in the main process) is separately refuted by G1: even a manifest receiver that cold-starts the main process must then issue a background `startForegroundService` from a UID that just lost its only FGS, and it eats the broadcast-dispatch latency.
 
@@ -1060,19 +1060,19 @@ I re-verified everything below in the working tree and in `vpn-debug (13).log` m
 **Design principle:** recovery lives entirely inside `:vpn`, never crosses a process boundary, never closes the tun, and never kills the process. The main process is a UI mirror. The process kill survives only as tier 4.
 
 ### Phase 0 — instrumentation, ship first, one build (half a day)
-1. `OnthecrowVpnService.kt:462-474` — log `socket.localAddress` on every probe. Settles C's P1 mechanism.
-2. `OnthecrowVpnService.kt:245` — log the emitted `runtimeJson` once. Settles whether `finalmask.quicParams` exists (unblocks the one unverified config field).
+1. `DeltaVpnService.kt:462-474` — log `socket.localAddress` on every probe. Settles C's P1 mechanism.
+2. `DeltaVpnService.kt:245` — log the emitted `runtimeJson` once. Settles whether `finalmask.quicParams` exists (unblocks the one unverified config field).
 3. Field test: handover + Doze exit, pull both logs.
 
 ### Phase 1 — the fix
-4. **Honest probe.** `OnthecrowVpnService.kt:462-474`: `connect()` the `DatagramSocket`, assert `localAddress == 10.77.0.2` (hoist the literal to a constant shared with the `Builder` at `:193`), verify the DNS txid and the QR bit. Refuse to probe within 500 ms of an `establish()`. *(C-F1; adjudicated correct under either mechanism.)*
+4. **Honest probe.** `DeltaVpnService.kt:462-474`: `connect()` the `DatagramSocket`, assert `localAddress == 10.77.0.2` (hoist the literal to a constant shared with the `Builder` at `:193`), verify the DNS txid and the QR bit. Refuse to probe within 500 ms of an `establish()`. *(C-F1; adjudicated correct under either mechanism.)*
 5. **Patch libXray: export `CloseAll()` for the hysteria pool**, call it from `PlatformXrayEngine.android.kt:132-145` immediately after `stopXray`. Also call it on user config switches (C-P5: the pool caches the auth string keyed on `host:port`). *(C-F3(a) — the one change that makes the target reachable.)*
 6. **Stop rebuilding the tun on recovery.** Split `runConnect`: add `runRedial()` = `stopXray → CloseAll → setTunFd(freshDup) → start`, leaving `tunInterface` untouched. `stopTunnel()` (`:188`, `:340-346`) is reached only from user connect/disconnect/revoke/fatal. **Do not close the dup'd fd** (`:302`) — leak it. Delete the now-false comment at `:60-63`/`:227-231`.
 7. **Make `registerProtectControllers` idempotent** (`PlatformXrayEngine.android.kt:103`) with a process-level `AtomicBoolean` — mandatory before (6) ships, since the controller slice is append-only and global.
 8. **Delete the cross-process recovery path**: `sendRecoverRequest`/`registerRecoverRequest` (`VpnStatusBroadcast.kt:45-59`), `onRecoverRequested`/`reconnect` (`PlatformVpnController.android.kt:47-77`). *(Refuted by G1.)*
 9. **Split teardown from recovery**: `runDisconnect(stopService)` → `runUserDisconnect()` (only this calls `paramsStore.clear()`, `:311`) and `runRecoveryRestart()` (keeps params, keeps `Connecting`). Recovery must never emit `Disconnected` — that is also what stops `VpnSyncWorker` from being dragged through a phantom cycle (gap 3.1).
 10. **Wakelock.** Add `WAKE_LOCK` to `androidApp/src/main/AndroidManifest.xml` (absent today — verified). Acquire a `PARTIAL_WAKE_LOCK` with a 20 s timeout at the top of the recovery ladder, release in `finally`.
-11. **Trigger set** (`OnthecrowVpnService.kt:508-533`, `:591-645`), all screen-state-independent:
+11. **Trigger set** (`DeltaVpnService.kt:508-533`, `:591-645`), all screen-state-independent:
     - `onCapabilitiesChanged` with `NET_CAPABILITY_VALIDATED` true on a network `!= lastUnderlying` — **not** bare `onAvailable` (cellular validates 1–3 s late; re-dialling early burns the attempt).
     - `onLinkPropertiesChanged` when addresses/routes change on the current underlying (only signal for a same-netId route change; currently a no-op at `:617-619`).
     - `onLost(lastUnderlying)` → `applyUnderlyingNetworks(null)`; track last-*available* by netId so a Wi-Fi flap (`02:16:09.625/.705`) is not read as a change.
@@ -1122,7 +1122,7 @@ Verified this round: `PlatformXrayEngine.android.kt:103` calls `registerProtectC
 
 **Adjudication: C wins, and this is the single most important correction in the grooming.** Go's runtime `nanotime` is `clock_gettime(CLOCK_MONOTONIC)`; `time.Now()`'s monotonic reading and all runtime timers ride it; `CLOCK_BOOTTIME` is the suspend-inclusive one and Go does not use it. C's measurement (`20:39:32.751` screen-on → `20:40:02.834` first fresh dial = 30.08 s) is not a coincidence — it is the idle timer restarting at resume. My §3.1 claim that `maxIdleTimeout:5` makes the pool "self-heal in ~5 s" is **wrong for the Doze case**: it yields 5 s *after wake*, not 5 s after the link died. I withdraw it as a cure and keep it only as a screen-on-handover mitigation.
 
-**Corollary neither report drew:** the same freeze applies to the *app's* timers. `delay(8_000)` in `keepAliveLoop` (`OnthecrowVpnService.kt:434-450`) and the 1500 ms probe timeout are `CLOCK_MONOTONIC`-based too. Only the recovery debounce (`SystemClock.elapsedRealtime()`, `:405-413`) is `BOOTTIME` and therefore suspend-aware — which means **the debounce is the one timer that keeps running while everything else is frozen**, i.e. it can expire "early" relative to every other timer in the system. Minor, but it means the 6 s debounce is not comparable to the 8 s keepalive interval.
+**Corollary neither report drew:** the same freeze applies to the *app's* timers. `delay(8_000)` in `keepAliveLoop` (`DeltaVpnService.kt:434-450`) and the 1500 ms probe timeout are `CLOCK_MONOTONIC`-based too. Only the recovery debounce (`SystemClock.elapsedRealtime()`, `:405-413`) is `BOOTTIME` and therefore suspend-aware — which means **the debounce is the one timer that keeps running while everything else is frozen**, i.e. it can expire "early" relative to every other timer in the system. Minor, but it means the 6 s debounce is not comparable to the 8 s keepalive interval.
 
 ### C2 — Does `keepAlivePeriod: 2` hold the NAT mapping through Doze? **C is right. No.**
 I proposed it partly for NAT retention. Frozen timer ⇒ no pings ⇒ mapping expires (30–120 s cellular). C's P7 is correct and my §3.3's framing ("that is fine and in fact desirable") was hand-waving a defect into a feature. It *is* survivable, but only because F1/F3 make the post-wake redial fast — not because the keepalive works.
@@ -1139,7 +1139,7 @@ The correlation (two "probe OK after ~38 ms" verdicts with no matching `proxy/tu
 ### C6 — Tun rebuild on every recovery. **C is right; my report and A's both missed it.**
 I wrote that the code "already correctly keeps `tunInterface` open (`:222-231`, `:339-346`)". C found that `runConnect:188` calls `stopTunnel()`, which closes the master, and that the `keepTun` path was deleted from the tree. **C is correct and I was wrong** — I read the helper in isolation and not its caller. This matters: it means there is no existing in-process redial path to build on; §3.2 Tier 1 has to be written, not just re-enabled.
 
-### C7 — fd close (`OnthecrowVpnService.kt:299-304`). **B and C agree (leak the dup); A didn't cover.** C additionally *observed* the fd numbers recycling (101/102/103 alternating across cycles), upgrading my P6 from latent to demonstrated. Take option (a): never close the dup.
+### C7 — fd close (`DeltaVpnService.kt:299-304`). **B and C agree (leak the dup); A didn't cover.** C additionally *observed* the fd numbers recycling (101/102/103 alternating across cycles), upgrading my P6 from latent to demonstrated. Take option (a): never close the dup.
 
 ### C8 — Whether the main process is alive at recovery time. **A has evidence; B and C inferred.**
 A's `vpn-debug (13).log` finding (main pid 26986 last logs `01:40:42`, `:vpn` pid 27094 recovers at `02:15:52`, next main pid appears only when the user launched the app) is the strongest evidence in any of the three reports for P-A1/P-B2. **Adjudicated in A's favour.** The broadcast-to-main design is dead regardless of anything in my domain.
@@ -1176,7 +1176,7 @@ Second failure mode: `maxIdleTimeout: 5` on a lossy cell link tears down a *heal
 
 **Proposals relying on banned foundations — explicit call-out:**
 - Anything routing recovery through `VpnStatusBroadcast.sendRecoverRequest` / `PlatformVpnController.onRecoverRequested` → **relies on the main process being alive.** Refuted by A's log evidence (C8). Delete from the critical path.
-- Any reliance on `START_STICKY` self-heal (`OnthecrowVpnService.kt:136-149`) → zero field occurrences across all logs. Treat as non-existent.
+- Any reliance on `START_STICKY` self-heal (`DeltaVpnService.kt:136-149`) → zero field occurrences across all logs. Treat as non-existent.
 - `finalmask.quicParams` → **unverified config field**; must not be load-bearing (above).
 
 ---
@@ -1202,17 +1202,17 @@ Second failure mode: `maxIdleTimeout: 5` on a lossy cell link tears down a *heal
 Design principle: **the `:vpn` process repairs itself, in-process, without touching the tun, without the main process, without a process kill, and without trusting any timer that freezes across suspend.** Process restart survives only as tier 3.
 
 ### Phase 0 — instrumentation (do these before anything else; ~30 min, unblocks three disputes)
-1. `OnthecrowVpnService.kt:462-474` — log `socket.localAddress` on every probe. Settles C5.
-2. `OnthecrowVpnService.kt:245` — log the full `runtimeJson` once. Settles whether `finalmask.quicParams` exists and whether §3.1 is an insert or a merge.
+1. `DeltaVpnService.kt:462-474` — log `socket.localAddress` on every probe. Settles C5.
+2. `DeltaVpnService.kt:245` — log the full `runtimeJson` once. Settles whether `finalmask.quicParams` exists and whether §3.1 is an insert or a merge.
 3. Log the dup'd fd number on every `setTunFd` and every close. Settles the recycling race.
 
 ### Phase 1 — make the sensor honest (highest value/effort; fixes the "recovery stops one step short" failure)
-4. `OnthecrowVpnService.kt:462-474` — rewrite `probeTunnel` per C's F1: `connect()` the DatagramSocket, **assert `localAddress == 10.77.0.2`**, check the DNS txid and the QR bit. Anything else is a hard fail.
+4. `DeltaVpnService.kt:462-474` — rewrite `probeTunnel` per C's F1: `connect()` the DatagramSocket, **assert `localAddress == 10.77.0.2`**, check the DNS txid and the QR bit. Anything else is a hard fail.
 
 ### Phase 2 — make recovery in-process and tun-preserving
 5. `PlatformXrayEngine.android.kt:103` — guard `registerProtectControllers` with a process-level `AtomicBoolean`. **Blocking prerequisite for everything below** (gap 1).
-6. `OnthecrowVpnService.kt:299-304` — stop closing the dup'd fd. Leak it; process death reclaims it. Always `setTunFd(freshDup)` before every `start()` and log the number (footgun in §2).
-7. `OnthecrowVpnService.kt` — add `runRedial()`: `stopXray()` → `CloseAll()` (phase 3) → `setTunFd(freshDup)` → `xrayEngine.start()`. **Never calls `stopTunnel()`.** `runConnect`/`stopTunnel` remain for user connect/disconnect and fatal failure only (C6).
+6. `DeltaVpnService.kt:299-304` — stop closing the dup'd fd. Leak it; process death reclaims it. Always `setTunFd(freshDup)` before every `start()` and log the number (footgun in §2).
+7. `DeltaVpnService.kt` — add `runRedial()`: `stopXray()` → `CloseAll()` (phase 3) → `setTunFd(freshDup)` → `xrayEngine.start()`. **Never calls `stopTunnel()`.** `runConnect`/`stopTunnel` remain for user connect/disconnect and fatal failure only (C6).
 8. Split `runDisconnect` (`:306-326`) so only the user/revoke path calls `paramsStore.clear()` (`:311`). Recovery keeps the persisted config. Move `recordRecoveryKill()` (`:410`) to *after* a confirmed-successful recovery.
 9. Delete `sendRecoverRequest`/`registerRecoverRequest` (`VpnStatusBroadcast.kt:45-59`) from the critical path and `onRecoverRequested`/`reconnect` (`PlatformVpnController.android.kt:47-77`) as the primary mechanism. Main process becomes a UI mirror only.
 
@@ -1230,7 +1230,7 @@ func CloseAll() {
 Take the **client** lock, make `close()` idempotent (gap: nil-deref panic = process death, §2). Do the same for `transport/internet/quic`'s `clientConnections` global if vless-over-QUIC is in scope. Export through a libXray wrapper next to `onthecrow_convert/`; add the `replace` in `.libxray-build/libXray/go.mod`; call from `PlatformXrayEngine.stop()` immediately after `stopXray` returns.
 
 ### Phase 4 — triggers (act regardless of screen state)
-11. `OnthecrowVpnService.kt:591-645`:
+11. `DeltaVpnService.kt:591-645`:
     - trigger on `onCapabilitiesChanged` + `NET_CAPABILITY_VALIDATED` on a network `!= lastUnderlying`, not bare `onAvailable`;
     - trigger on `onLinkPropertiesChanged` for the current underlying (same-netId route change);
     - on `onLost`, call `applyUnderlyingNetworks(null)` and **do not** null `lastUnderlying` — compare netIds so a flap is not a "change";
@@ -1289,7 +1289,7 @@ The server is `78.17.84.51` (Ireland). A DNS query that genuinely traverses tun 
 
 This upgrades my P1 from "correlation" to "two independent proofs" and it settles the ranking: **the recovery machinery has been repeatedly told it succeeded when it had not.** Any latency measurement, any "did the fix work" verdict, and any keepalive decision taken so far is built on a sensor that lies precisely in the state it exists to detect. **Fix the probe first or you cannot evaluate any other change.**
 
-Also re-verified this session, all in `OnthecrowVpnService.kt`: the class comment at `:290` (`"The tun interface stays up"`) and `:60-63` are both **false** — `runConnect:188` calls `stopTunnel()` which closes `tunInterface` at `:343`. `onLinkPropertiesChanged` is log-only. `onLost` does not call `applyUnderlyingNetworks(null)`. `probeTunnel` uses an unconnected `DatagramSocket`, checks only `length > 0`, never checks the txid it builds. Manifest: **no** `WAKE_LOCK`, **no** `RECEIVE_BOOT_COMPLETED`, **no** `SCHEDULE_EXACT_ALARM`, **no** manifest receiver of any kind. `XrayConfigSanitizer.withTunInbound` touches only `inbounds`, `log`, and `outbounds.sendThrough` — it never emits `streamSettings`.
+Also re-verified this session, all in `DeltaVpnService.kt`: the class comment at `:290` (`"The tun interface stays up"`) and `:60-63` are both **false** — `runConnect:188` calls `stopTunnel()` which closes `tunInterface` at `:343`. `onLinkPropertiesChanged` is log-only. `onLost` does not call `applyUnderlyingNetworks(null)`. `probeTunnel` uses an unconnected `DatagramSocket`, checks only `length > 0`, never checks the txid it builds. Manifest: **no** `WAKE_LOCK`, **no** `RECEIVE_BOOT_COMPLETED`, **no** `SCHEDULE_EXACT_ALARM`, **no** manifest receiver of any kind. `XrayConfigSanitizer.withTunInbound` touches only `inbounds`, `log`, and `outbounds.sendThrough` — it never emits `streamSettings`.
 
 ---
 
@@ -1368,7 +1368,7 @@ Breaks in at least four ways. (i) `setExactAndAllowWhileIdle` is rate-limited to
 
 Strictly ordered. **Steps 0–2 are the fix; nothing after step 2 is measurable until step 0 lands.**
 
-**Step 0 — Make the sensor honest.** `OnthecrowVpnService.kt:462-474`. `DatagramSocket.connect(1.1.1.1:53)` first (forces the kernel to bind a source address from the route it will actually use, and filters replies by 5-tuple), then **assert `socket.localAddress == 10.77.0.2`** — extract the address to a constant shared with the `Builder` at `:193`. Verify the DNS txid and the QR bit in the response. Log `localAddress` on every probe for one build. This alone would have caught all three false positives, and it is the only way to trust any later measurement. Cost: ~15 lines.
+**Step 0 — Make the sensor honest.** `DeltaVpnService.kt:462-474`. `DatagramSocket.connect(1.1.1.1:53)` first (forces the kernel to bind a source address from the route it will actually use, and filters replies by 5-tuple), then **assert `socket.localAddress == 10.77.0.2`** — extract the address to a constant shared with the `Builder` at `:193`. Verify the DNS txid and the QR bit in the response. Log `localAddress` on every probe for one build. This alone would have caught all three false positives, and it is the only way to trust any later measurement. Cost: ~15 lines.
 
 **Step 1 — Fork libXray, export a pool flush.** `.libxray-build/libXray` is present with full source [V]; `scripts/build-libxray-android.sh` already builds xray from source and the repo already carries a custom Go package (`onthecrow_convert/`), so the machinery exists. Add to a fork of `transport/internet/hysteria/dialer.go`:
 ```go

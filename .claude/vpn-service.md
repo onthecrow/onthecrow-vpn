@@ -28,7 +28,7 @@ Two processes, one UID:
 
 | Process | Holds | Lifetime |
 |---|---|---|
-| **app (default)** | `OnthecrowVpnService` (the `VpnService`), the tun fd, the recovery ladder, the health probe, ConnectivityManager callbacks, screen/idle receivers, the UI, Koin | Owns the tun for the whole session. **Never killed on purpose.** |
+| **app (default)** | `DeltaVpnService` (the `VpnService`), the tun fd, the recovery ladder, the health probe, ConnectivityManager callbacks, screen/idle receivers, the UI, Koin | Owns the tun for the whole session. **Never killed on purpose.** |
 | **`:xray`** | libXray and nothing else, behind a hand-rolled Binder | Exists **so it can be SIGKILLed and replaced.** |
 
 **Why `:xray` is a separate process (the real reason — earlier comments were wrong).** hysteria2 keeps
@@ -55,7 +55,7 @@ open across the restart, so the icon does not blink.
 ## 3. File map
 
 **App process (`core/vpn/impl/src/androidMain/.../vpn/`)**
-- `OnthecrowVpnService.kt` (~2100 lines) — the heart. Tun lifecycle, recovery ladder, probes, network
+- `DeltaVpnService.kt` (~2100 lines) — the heart. Tun lifecycle, recovery ladder, probes, network
   callbacks, retry engine, split-tunnel apply.
 - `PlatformVpnController.android.kt` — the main-process façade the UI calls: `connect` / `disconnect` /
   `revoke`. Writes `AndroidVpnRuntime.status` directly (same process now — no broadcast).
@@ -80,7 +80,7 @@ open across the restart, so the icon does not blink.
 - `PlatformXrayEngine.android.kt` — the actual libXray bridge (reflection `Invoke`), runs in `:xray`.
 - `TunnelEngine.kt` — the narrow interface the VpnService uses (`startOnTun` / `stop` /
   `killEngineProcess` / `release`).
-- `OtcLog.kt` — the single shared log file (`onthecrow-vpn.log`, 100 MB cap, truncated in place). Both
+- `OtcLog.kt` — the single shared log file (`delta-vpn.log`, 100 MB cap, truncated in place). Both
   processes write it; the process tag is `main` / `xray`.
 - `commonMain/.../XrayConfigSanitizer.kt` — builds the runtime JSON (tun inbound, log level, split
   tunnel, **quicParams**).
@@ -401,7 +401,7 @@ dozens of times in the pre-split log).
 
 ---
 
-## 15. Diagnostic markers in the log (`onthecrow-vpn.log`)
+## 15. Diagnostic markers in the log (`delta-vpn.log`)
 
 Grep-able signals. Process tag `main` vs `xray`; xray-core lines start with `20YY/…` and are in **UTC**
 (= local − 5h in the field logs seen so far).
@@ -424,7 +424,7 @@ approach is settled.
 ## 16. Analytics instrumentation (main process only)
 
 The service fires 8 Firebase events through `AnalyticsManager` (`core:analytics`, an **androidMain-only**
-dep — the module has no macOS target). `OnthecrowVpnService` is a `KoinComponent` and `by inject()`s the
+dep — the module has no macOS target). `DeltaVpnService` is a `KoinComponent` and `by inject()`s the
 manager. Fire-and-forget; carries **outcomes/enums/coarse buckets only** — never a server, credential,
 config, destination, or raw count/timestamp. NEVER instrument from `:xray` (no Firebase there).
 
@@ -467,7 +467,7 @@ report file save/load failures (`DATASTORE`). `RemoteXrayEngine` (the MAIN-proce
 binder/transaction/decode/bind failures (`XRAY_IPC`) — but the `:xray` side (`XrayEngineService`,
 `PlatformXrayEngine.android`) NEVER reports (no Firebase there). The impl scrubs the throwable message
 (keeps type + stack); expected control-flow (probe timeouts, close/flush) is deliberately not reported.
-The **iOS NE tunnel** (`OnthecrowTunnelCore`, the iOS analog of `:xray`) is a separate process with no
+The **iOS NE tunnel** (`DeltaTunnelCore`, the iOS analog of `:xray`) is a separate process with no
 Koin: it reports via `core:firebase-crashlytics`, a **Crashlytics-only** Firebase surface that links only
 the Crashlytics closure — never Firestore/gRPC — so the appex stays slim. It reuses the same
 `ErrorReporter` scrubbing. Full map: [`docs/error-reporting.md`](../docs/error-reporting.md).

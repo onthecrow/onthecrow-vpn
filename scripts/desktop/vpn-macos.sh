@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Privileged macOS VPN wrapper for the OnthecrowVPN desktop app.
+# Privileged macOS VPN wrapper for the DeltaVPN desktop app.
 # Runs as root (invoked via `osascript ... with administrator privileges`).
 #
 # Responsibilities (everything that needs root):

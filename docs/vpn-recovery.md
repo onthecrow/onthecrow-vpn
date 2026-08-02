@@ -159,7 +159,7 @@ bad new config therefore never costs the working tunnel.
 
 Recovery and lifecycle are instrumented with Firebase events (`vpn_connected`, `vpn_error`,
 `vpn_session_end`, `vpn_recovery`, `vpn_engine_death`, `vpn_tun_rebuild`, `vpn_tunnel_confirmed`,
-`vpn_keepalive_health`), fired from `OnthecrowVpnService` in the **main process only**. They carry
+`vpn_keepalive_health`), fired from `DeltaVpnService` in the **main process only**. They carry
 **outcomes, coarse buckets and enums** — a recovery run reports its trigger/outcome/attempt-bucket/
 duration-bucket and the coarse transport type, never a network id, address, or timing. To make this
 possible `runLadder` (and `restartEngineForRecovery`) now **return a `RecoveryOutcome?`** so `recover()`

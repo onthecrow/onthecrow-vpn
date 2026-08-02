@@ -11,7 +11,7 @@ kotlin {
     macosArm64 {
         binaries.executable {
             baseName = "onthecrow-macos-bridge"
-            entryPoint = "com.onthecrow.onthecrowvpn.macosbridge.main"
+            entryPoint = "com.onthecrow.deltavpn.macosbridge.main"
         }
     }
 

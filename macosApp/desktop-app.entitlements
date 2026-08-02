@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <!--
-      Entitlements for the JVM launcher (Contents/MacOS/OnthecrowVPN) and the outer OnthecrowVPN.app
+      Entitlements for the JVM launcher (Contents/MacOS/DeltaVPN) and the outer DeltaVPN.app
       when deep-signing for notarization (scripts/package-macos-app.sh).
 
       The JIT trio is required for the bundled JRE to run under the hardened runtime (HotSpot JITs
@@ -20,7 +20,7 @@
     <true/>
     <key>com.apple.security.application-groups</key>
     <array>
-        <string>group.com.onthecrow.onthecrowvpn</string>
+        <string>group.com.onthecrow.deltavpn</string>
     </array>
 </dict>
 </plist>

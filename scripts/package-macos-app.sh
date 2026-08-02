@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Builds a SINGLE, self-contained, Developer-ID signed + notarized OnthecrowVPN.app for macOS.
+# Builds a SINGLE, self-contained, Developer-ID signed + notarized DeltaVPN.app for macOS.
 #
 # The one bundle embeds:
 #   - the Compose Desktop JVM app + bundled JRE (jpackage output),
@@ -16,9 +16,9 @@
 # Prereqs (see macosApp/README.md §5):
 #   * "Developer ID Application" certificate in the login keychain (Team Q468Q9633Q).
 #   * Two Developer ID provisioning profiles installed/downloaded:
-#       - "Onthecrow Host DevID"   (App ID com.onthecrow.onthecrowvpn, caps: Network Extensions +
+#       - "Onthecrow Host DevID"   (App ID com.onthecrow.deltavpn, caps: Network Extensions +
 #                                   System Extension + App Groups)
-#       - "Onthecrow Sysext DevID" (App ID com.onthecrow.onthecrowvpn.SystemExtension, caps: Network
+#       - "Onthecrow Sysext DevID" (App ID com.onthecrow.deltavpn.SystemExtension, caps: Network
 #                                   Extensions + App Groups)
 #   * A notarytool keychain profile:  xcrun notarytool store-credentials onthecrow \
 #         --apple-id you@example.com --team-id Q468Q9633Q --password <app-specific-password>
@@ -40,14 +40,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IDENTITY="${ONTHECROW_SIGN_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${ONTHECROW_NOTARY_PROFILE:-onthecrow}"
-APP="$ROOT/desktopApp/build/compose/binaries/main/app/OnthecrowVPN.app"
+APP="$ROOT/desktopApp/build/compose/binaries/main/app/DeltaVPN.app"
 BRIDGE_KEXE="$ROOT/core/vpn/macos-bridge/build/bin/macosArm64/releaseExecutable/onthecrow-macos-bridge.kexe"
 DERIVED="$ROOT/build/macos-derived"
-XCODEPROJ="$ROOT/macosApp/OnthecrowSysextHost/OnthecrowSysextHost.xcodeproj"
+XCODEPROJ="$ROOT/macosApp/DeltaSysextHost/DeltaSysextHost.xcodeproj"
 
 ENT_APP="$ROOT/macosApp/desktop-app.entitlements"
 ENT_BRIDGE="$ROOT/macosApp/macos-bridge.entitlements"
-ENT_SYSEXT="$ROOT/macosApp/OnthecrowSysextHost/SystemExtension/SystemExtension.entitlements"
+ENT_SYSEXT="$ROOT/macosApp/DeltaSysextHost/SystemExtension/SystemExtension.entitlements"
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -126,7 +126,7 @@ cp "$SYSEXT_PROFILE" "$EMB_SYSEXT/Contents/embedded.provisionprofile"
 # =================================================================================================
 log "3/7  signing nested Mach-O (JRE + bundled sidecars)"
 sign_machos_in "$APP/Contents/runtime"
-sign_machos_in "$APP/Contents/app/resources"   # onthecrow-xray / onthecrow-convert (Mach-O)
+sign_machos_in "$APP/Contents/app/resources"   # delta-xray / delta-convert (Mach-O)
 
 log "4/7  signing system extension (NE entitlements + Sysext profile)"
 codesign --force --options runtime --timestamp --sign "$IDENTITY" --entitlements "$ENT_SYSEXT" "$EMB_SYSEXT"
@@ -135,7 +135,7 @@ log "5/7  signing bridge + launcher"
 codesign --force --options runtime --timestamp --sign "$IDENTITY" --entitlements "$ENT_BRIDGE" \
   "$APP/Contents/Helpers/onthecrow-macos-bridge"
 codesign --force --options runtime --timestamp --sign "$IDENTITY" --entitlements "$ENT_APP" \
-  "$APP/Contents/MacOS/OnthecrowVPN"
+  "$APP/Contents/MacOS/DeltaVPN"
 
 log "6/7  sealing the whole .app"
 codesign --force --options runtime --timestamp --sign "$IDENTITY" --entitlements "$ENT_APP" "$APP"
@@ -149,7 +149,7 @@ if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
 fi
 
 log "7/7  notarizing"
-ZIP="$ROOT/build/macos/OnthecrowVPN.zip"
+ZIP="$ROOT/build/macos/DeltaVPN.zip"
 mkdir -p "$ROOT/build/macos"
 /usr/bin/ditto -c -k --keepParent "$APP" "$ZIP"
 xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
@@ -158,9 +158,9 @@ rm -f "$ZIP"
 
 if [ "${MAKE_DMG:-0}" = "1" ]; then
   log "building + notarizing DMG"
-  DMG="$ROOT/build/macos/OnthecrowVPN-1.0.0.dmg"
+  DMG="$ROOT/build/macos/DeltaVPN-1.0.0.dmg"
   rm -f "$DMG"
-  /usr/bin/hdiutil create -volname "OnthecrowVPN" -srcfolder "$APP" -ov -format UDZO "$DMG"
+  /usr/bin/hdiutil create -volname "DeltaVPN" -srcfolder "$APP" -ov -format UDZO "$DMG"
   codesign --force --timestamp --sign "$IDENTITY" "$DMG"
   xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple "$DMG"

@@ -1,5 +1,5 @@
 <#
-  Privileged Windows VPN wrapper for the OnthecrowVPN desktop app.
+  Privileged Windows VPN wrapper for the DeltaVPN desktop app.
   Runs elevated (UAC), launched via `Start-Process -Verb RunAs`.
 
   The libXray sidecar itself creates the Wintun adapter and (via route_windows.go /

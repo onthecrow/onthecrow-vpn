@@ -17,7 +17,7 @@ kotlin {
         val sliceDir = rootProject.file("libs/LibXray/LibXray.xcframework/$archSlice")
 
         appleTarget.binaries.framework {
-            baseName = "OnthecrowTunnel"
+            baseName = "DeltaTunnel"
             isStatic = true
         }
 

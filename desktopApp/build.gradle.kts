@@ -18,13 +18,13 @@ dependencies {
 
 compose.desktop {
     application {
-        mainClass = "com.onthecrow.onthecrowvpn.MainKt"
+        mainClass = "com.onthecrow.deltavpn.MainKt"
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
-            packageName = "OnthecrowVPN"
+            packageName = "DeltaVPN"
             packageVersion = "1.0.0"
-            description = "OnthecrowVPN"
+            description = "DeltaVPN"
             vendor = "Onthecrow"
 
             // Bundle the FULL JDK module set. jlink otherwise trims the runtime to a handful of modules,
@@ -45,24 +45,24 @@ compose.desktop {
                 // build is signed/notarized by scripts/package-macos-app.sh, which also embeds the
                 // system extension + bridge (each with their own entitlements/profile). See
                 // macosApp/README.md §5.
-                bundleID = "com.onthecrow.onthecrowvpn"
-                iconFile.set(project.file("icons/OnthecrowVPN.icns"))
+                bundleID = "com.onthecrow.deltavpn"
+                iconFile.set(project.file("icons/DeltaVPN.icns"))
             }
 
             windows {
                 // Create Start-menu + desktop shortcuts so it installs like a normal app, and let the
                 // user pick the install location. The fixed upgradeUuid lets future versions upgrade in
                 // place instead of installing side-by-side.
-                menuGroup = "OnthecrowVPN"
+                menuGroup = "DeltaVPN"
                 menu = true
                 shortcut = true
                 dirChooser = true
                 upgradeUuid = "a69d5b2a-21d4-4d80-a7ff-0ecd70ec5125"
-                iconFile.set(project.file("icons/OnthecrowVPN.ico"))
+                iconFile.set(project.file("icons/DeltaVPN.ico"))
             }
 
             linux {
-                iconFile.set(project.file("icons/OnthecrowVPN.png"))
+                iconFile.set(project.file("icons/DeltaVPN.png"))
             }
         }
     }

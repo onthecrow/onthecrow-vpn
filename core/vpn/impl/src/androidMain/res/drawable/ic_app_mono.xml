@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Monochrome app mark for the notification / status bar and the Quick Settings tile.
+
+  Hand-drawn source: authored as a 1024x1024 SVG and converted verbatim — same paths, same 45-unit
+  stroke, same draw order (the tail's outline UNDER the filled swoosh, so the seam where the two meet
+  is covered rather than drawn across the mark).
+
+  Only the framing is added here. The group re-centres the artwork on its own measured bounds — the
+  fill's outline plus half the stroke on the stroked path — inside a square 1025 viewport, so the
+  mark runs edge to edge with no padding and the stroke is never clipped. Recompute those numbers if the
+  artwork changes; do not hand-edit the stroke width alone or the outline will be cut off.
+
+  One flat #FFFFFF and no android:tint on purpose: these surfaces tint by ALPHA and discard the colour,
+  and a ?attr/ tint would resolve against whichever theme SystemUI inflates this in, not ours.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="1024.7"
+    android:viewportHeight="1024.7">
+  <group
+      android:translateX="1.13"
+      android:translateY="-0.81">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="45"
+        android:pathData="M349 477C349 477 392.5 580 562.066 929.485C612.754 1033.96 704.373 1013.58 725.109 952.071C771.281 815.117 890 456 890 456L349 477Z"/>
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M775.5 28.5002C605.88 127.03 265.002 319.001 60.5021 435.501C-51.4978 503.883 3.71828 606.102 139.502 612.5C330.501 621.5 434 632 605.5 644C811 658.379 733 831.5 733 858C803.5 777.5 935.5 398.5 1008.5 186C1076.47 -11.8629 870.184 -26.5 775.5 28.5002Z"/>
+  </group>
+</vector>
