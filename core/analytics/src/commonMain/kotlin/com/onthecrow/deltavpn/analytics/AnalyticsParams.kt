@@ -63,7 +63,18 @@ enum class VpnErrorCategory {
 }
 
 /** Why a connected session ended. */
-enum class SessionEndReason { USER, EXTERNAL_REVOKE, FATAL_ERROR }
+enum class SessionEndReason {
+    USER,
+    EXTERNAL_REVOKE,
+    FATAL_ERROR,
+
+    /**
+     * The tunnel was rebuilt under a still-connected user — a config or split-tunnel change reapplied
+     * in place. Distinct from [USER] because nobody asked to stop, and a `vpn_connected` for the new
+     * session follows immediately; counting these as user disconnects overstated both.
+     */
+    RECONNECT,
+}
 
 /** What triggered a recovery-ladder run. Mapped from the internal reason, never the raw reason string. */
 enum class RecoveryTrigger {

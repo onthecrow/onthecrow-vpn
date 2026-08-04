@@ -82,5 +82,7 @@ val connectionLogicModule = module {
     single { RefreshSourceUseCaseImpl(get(), get(), get(), get()) } bind RefreshSourceUseCase::class
     single { SelectConfigUseCaseImpl(get()) } bind SelectConfigUseCase::class
     single { PrepareConnectionConfigUseCaseImpl(get()) } bind PrepareConnectionConfigUseCase::class
-    single(createdAtStart = true) { VpnSyncWorker(get(), get(), get(), get(), get(), get()) }
+    single(createdAtStart = true) {
+        VpnSyncWorker(get<ConfigSourcesOrchestrator>().state, get(), get(), get(), get(), get())
+    }
 }

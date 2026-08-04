@@ -211,6 +211,23 @@ class DeltaVpnService : VpnService(), KoinComponent {
     private var disconnecting = false
 
     /**
+     * A CONNECT has been accepted and is waiting on [operationMutex]. The mirror of [disconnecting],
+     * and read at the same wait points.
+     *
+     * It exists because a settings reapply is now a plain CONNECT into the LIVE service
+     * (`VpnSyncWorker.restartWith`) instead of a disconnect/reconnect pair. The disconnect it replaced
+     * carried [disconnecting] with it, which stood the ladder down; without a mirror, a reapply that
+     * lands mid-recovery would queue behind up to 45s of NonCancellable T0 patience with the UI
+     * sitting on "Connecting".
+     *
+     * Best-effort by design: it is a hint that makes the ladder yield sooner, never a correctness
+     * gate. [runConnect] is queued on the mutex regardless, so losing a race here costs latency, not
+     * the reconnect.
+     */
+    @Volatile
+    private var connectRequested = false
+
+    /**
      * How many engine restarts in a row have failed to produce a working tunnel. Drives the backoff in
      * [restartDelayFor]; reset by [noteTunnelHealthy] on any confirmed probe.
      *
@@ -232,6 +249,15 @@ class DeltaVpnService : VpnService(), KoinComponent {
     /** Authoritative per-app routing, written by the main process. See [SplitTunnelRoutingStore]. */
     private val routingStore by lazy { SplitTunnelRoutingStore(this, errorReporter) }
 
+    /**
+     * The newest `startId` [onStartCommand] has seen. Only for teardown paths that were not started by
+     * a command of their own — the system's `onRevoke`, and a retry — which want "whatever is newest
+     * right now". Every path that DOES have its own start must carry that id down instead of reading
+     * this, or the check inverts: see [stopSelfUnlessRestarted].
+     */
+    @Volatile
+    private var lastStartId: Int = 0
+
     private val recoveryTuningRepository: RecoveryTuningRepository by inject()
 
     /**
@@ -249,10 +275,6 @@ class DeltaVpnService : VpnService(), KoinComponent {
     @Volatile
     private var retryPending = false
     private var retryJob: Job? = null
-
-    /** Answers a status re-query from a main process that restarted while the tunnel was up. */
-    @Volatile
-    private var lastPublishedStatus: ConnectionStatus = ConnectionStatus.Disconnected
 
     override fun onCreate() {
         super.onCreate()
@@ -287,11 +309,27 @@ class DeltaVpnService : VpnService(), KoinComponent {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // FIRST, before anything that touches storage or the app graph. Android gives a foreground
-        // service a few seconds to call this and throws ForegroundServiceDidNotStartInTimeException
-        // otherwise — and since the move into the app process, a boot or sticky start can be doing a
-        // cold graph init on a slow device at exactly this moment.
-        if (intent?.action != ACTION_DISCONNECT && intent?.action != ACTION_REVOKE) startAsForeground()
+        // FIRST, before anything that touches storage or the app graph, and for EVERY start —
+        // including the teardown actions.
+        //
+        // The deadline belongs to the START, not to what we intend to do with it: the moment anyone
+        // calls startForegroundService(), Android gives us a few seconds to reach startForeground() or
+        // it kills the process with ForegroundServiceDidNotStartInTimeException. This used to skip
+        // DISCONNECT/REVOKE, which was safe only by accident — `sendStop` happens to use startService()
+        // — so a single call site switching to startForegroundService() would have turned that skip
+        // into a guaranteed crash.
+        //
+        // Promoting on a teardown start costs nothing: the service is already in the foreground for the
+        // session — though NOT always: `VpnSyncWorker` revokes regardless of connection status, so a
+        // revoke can cold-start the service and briefly post a notification for a tunnel that never
+        // existed. The teardown paths below are what drop it —
+        // every one of them ends in [stopUnlessRestarted]. Deliberately NOT paired with an immediate
+        // stopForeground here: the tun is still up at this point, and dropping foreground before the
+        // teardown has run would invite the process to be frozen mid-disconnect.
+        startAsForeground()
+        // For the teardown paths that have no start of their own (the system's onRevoke, a retry). Read
+        // at the moment they run, which is the right answer for them: "the newest start we have seen".
+        lastStartId = startId
         logd("onStartCommand action=${intent?.action} flags=$flags startId=$startId")
         when (intent?.action) {
             ACTION_CONNECT -> {
@@ -312,7 +350,8 @@ class DeltaVpnService : VpnService(), KoinComponent {
                 if (!xrayJson.isNullOrBlank()) {
                     paramsStore.save(ConnectionParams(xrayJson, activeDisallow, activeAllow))
                 }
-                scope.launch { runConnect(xrayJson) }
+                connectRequested = true
+                scope.launch { runConnect(xrayJson, startId) }
             }
             // Set BEFORE launching, and outside [operationMutex], because a recovery may be holding that
             // mutex right now: the ladder is NonCancellable and can legitimately sit in its patience
@@ -320,12 +359,12 @@ class DeltaVpnService : VpnService(), KoinComponent {
             // long. The ladder polls this flag and stands down.
             ACTION_DISCONNECT -> {
                 disconnecting = true
-                scope.launch { runUserDisconnect(SessionEndReason.USER) }
+                scope.launch { runUserDisconnect(SessionEndReason.USER, startId) }
             }
             // Remote revocation: same teardown as disconnect (Android has no persisted system profile).
             ACTION_REVOKE -> {
                 disconnecting = true
-                scope.launch { runUserDisconnect(SessionEndReason.EXTERNAL_REVOKE) }
+                scope.launch { runUserDisconnect(SessionEndReason.EXTERNAL_REVOKE, startId) }
             }
             // intent == null (and so action == null): START_STICKY recreated us. That signal is now
             // unambiguous — it means an UNPLANNED death, because nothing kills this process on purpose
@@ -338,12 +377,11 @@ class DeltaVpnService : VpnService(), KoinComponent {
                     activeDisallow = saved.disallow
                     activeAllow = saved.allow
                     pendingConnectVia = ConnectVia.RESTORE
-                    scope.launch { runConnect(saved.xrayJson) }
+                    connectRequested = true
+                    scope.launch { runConnect(saved.xrayJson, startId) }
                 } else {
                     logd("sticky restart — no persisted config; standing down")
-                    // startForeground has already run, so leave the foreground state with it.
-                    ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    stopUnlessRestarted(startId)
                 }
             }
         }
@@ -363,7 +401,7 @@ class DeltaVpnService : VpnService(), KoinComponent {
         // plus a backoff that reaches five minutes, killing and respawning the engine the whole time,
         // which is what happens when another VPN app takes over.
         disconnecting = true
-        scope.launch { runUserDisconnect(SessionEndReason.EXTERNAL_REVOKE) }
+        scope.launch { runUserDisconnect(SessionEndReason.EXTERNAL_REVOKE, lastStartId) }
     }
 
     /**
@@ -395,16 +433,40 @@ class DeltaVpnService : VpnService(), KoinComponent {
     // a user connect, a crash self-heal, or a recovery restart, each in a brand-new process. There is
     // no in-process path, because xray's tun readers outlive [stopXray] and would fight the new
     // instance for packets.
-    private suspend fun runConnect(xrayJson: String?) {
+    private suspend fun runConnect(xrayJson: String?, startId: Int) {
         operationMutex.withLock {
+            // We are the connect the ladder was told to yield to; it has, so stop asking it to.
+            connectRequested = false
             val configJson = xrayJson ?: activeXrayJson
             logd("runConnect: hasConfig=${!configJson.isNullOrBlank()} underlying=$lastUnderlying")
             if (configJson.isNullOrBlank()) {
-                fail("No validated configuration is available", VpnErrorCategory.CONFIG_INVALID)
+                fail("No validated configuration is available", startId, VpnErrorCategory.CONFIG_INVALID)
                 return
             }
             activeXrayJson = configJson
             disconnecting = false
+            // Re-entering over a LIVE tunnel. This is the settings-reapply path: `VpnSyncWorker` used to
+            // disconnect and reconnect, which destroyed the service and is what made a split-tunnel
+            // change crash with ForegroundServiceDidNotStartInTimeException (§14). It now sends a plain
+            // CONNECT into the running service, so the two things that disconnect did for us have to
+            // happen here instead — and ONLY here, because [connectedAt] and [tunInterface] are both
+            // null on every other path into this function.
+            if (tunInterface != null) {
+                logd("connect: reapplying over a live session")
+                // The session really does end here — new tun, new engine — so it is measured and closed
+                // out before the success block below resets [connectedAt] and the keepalive counters.
+                // No-ops when nothing was connected, which is every other path into this function.
+                reportSessionEnd(SessionEndReason.RECONNECT)
+                // [tunnelJob] is deliberately NOT cancelled, tempting as it is — the old keepalive is
+                // about to probe a tun this function closes. Cancelling it loses the guarantee that the
+                // new session gets a watcher at all: [startMonitoring] below can be deferred by the
+                // `recovering` guard (an old keepalive's recover() blocked on the mutex we are holding
+                // counts as recovering), and the ONLY thing that drains that deferral is the tail of
+                // this very job. Left alone, both branches end with a watcher; cancelled, one of them
+                // ends with a live tunnel nobody is watching. What it costs instead is bounded and
+                // self-correcting: everything destructive the old loop can reach needs [operationMutex],
+                // which we hold until the new tunnel is up.
+            }
             // Re-read the physical network from the system instead of trusting cached callback state
             // (callbacks are dropped across Doze), then advertise it. On this path the cache is empty in
             // a fresh process, so the scan runs and seeds it.
@@ -478,8 +540,7 @@ class DeltaVpnService : VpnService(), KoinComponent {
                     analyticsManager.vpnPermissionResult(VpnPermissionOutcome.MISSING_AT_ESTABLISH)
                     analyticsManager.vpnError(VpnErrorCategory.PERMISSION_DENIED, terminal = true)
                     publishStatus(ConnectionStatus.Error("VPN permission is required"))
-                    ServiceCompat.stopForeground(this@DeltaVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+                    stopUnlessRestarted(startId)
                     return@onFailure
                 }
                 logd("runConnect FAILED: ${error.stackTraceToString()}")
@@ -749,7 +810,7 @@ class DeltaVpnService : VpnService(), KoinComponent {
      * besides the above, that status drives `VpnSyncWorker` to reset its active key, so a genuine remote
      * config change arriving mid-recovery would be silently swallowed.
      */
-    private suspend fun runUserDisconnect(reason: SessionEndReason) {
+    private suspend fun runUserDisconnect(reason: SessionEndReason, startId: Int) {
         operationMutex.withLock {
             logd("runUserDisconnect")
             // Cancel any pending retry FIRST: the whole point of an uncapped retry policy is that only
@@ -763,8 +824,7 @@ class DeltaVpnService : VpnService(), KoinComponent {
             reportSessionEnd(reason)
             stopTunnel()
             publishStatus(ConnectionStatus.Disconnected)
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            stopUnlessRestarted(startId)
             // [stopTunnel] above has already taken the engine process with it, which is what clears
             // xray's global connection pool — with keepalive on, a pool entry that is never re-dialled
             // would otherwise outlive the disconnect. Nothing is killed here any more.
@@ -975,7 +1035,9 @@ class DeltaVpnService : VpnService(), KoinComponent {
                 operationMutex.withLock {
                     val tuning = currentRecoveryTuning()
                     val outcome = runLadder(reason, rebuildTun, tuning)
-                    // One event per ladder run (null = stood down for a user disconnect — not reported).
+                    // One event per ladder run. A null outcome is a stand-down and is NOT reported —
+                    // [standDownReason] has two of them now, a user disconnect AND a connect waiting on
+                    // the mutex, and neither is a recovery result worth a number.
                     // `attempts` reads the restart counter post-run: a confirmed probe resets it to 0, so
                     // a recovered run buckets to "1" and an unrecovered one carries the climbing count.
                     if (outcome != null) {
@@ -1051,8 +1113,8 @@ class DeltaVpnService : VpnService(), KoinComponent {
         // timeout — is a Go timer on CLOCK_MONOTONIC and does not advance during suspend either. Wall
         // time would spend the whole budget on a single Doze nap without ever asking the tunnel.
         while (awakeElapsed() < patienceMs) {
-            if (disconnecting) {
-                logd("recover($reason): standing down — user is disconnecting")
+            standDownReason()?.let { why ->
+                logd("recover($reason): standing down — $why")
                 return null
             }
             if (sleptMs() > LADDER_ABANDON_SLEEP_MS) {
@@ -1091,8 +1153,8 @@ class DeltaVpnService : VpnService(), KoinComponent {
             attempt++
             delay(T0_PROBE_RETRY_DELAY_MS)
         }
-        if (disconnecting) {
-            logd("recover($reason): standing down — user is disconnecting")
+        standDownReason()?.let { why ->
+            logd("recover($reason): standing down — $why")
             return null
         }
         if (sleptMs() > LADDER_ABANDON_SLEEP_MS) {
@@ -1108,8 +1170,8 @@ class DeltaVpnService : VpnService(), KoinComponent {
         // interface and the system VPN icon blinked every time. Now only `:xray` dies. The tun is never
         // closed, nothing is re-established, and there is nothing to schedule — which is also why the
         // alarm, `SCHEDULE_EXACT_ALARM` and the battery-optimisation exemption are all gone.
-        if (disconnecting) {
-            logd("recover($reason): standing down — user is disconnecting")
+        standDownReason()?.let { why ->
+            logd("recover($reason): standing down — $why")
             return null
         }
         // Re-checked here and not only above, because T0's patience contains waits and the device can
@@ -1175,13 +1237,25 @@ class DeltaVpnService : VpnService(), KoinComponent {
         return if (result is XrayRunResult.Success) result else null
     }
 
+    /**
+     * Why the ladder should stop what it is doing, or null to carry on. Polled at every wait point,
+     * because the ladder is NonCancellable and can legitimately sit in T0's patience for the better
+     * part of a minute — long enough that a user who just tapped Disconnect, or a settings change that
+     * needs the tunnel rebuilt, would otherwise watch a dead UI for all of it.
+     */
+    private fun standDownReason(): String? = when {
+        disconnecting -> "user is disconnecting"
+        connectRequested -> "a connect is waiting to run"
+        else -> null
+    }
+
     private suspend fun restartEngineForRecovery(reason: String): RecoveryOutcome {
         val attempt = ++engineRestartAttempt
         val backoff = restartDelayFor(attempt)
         logd("T2 restart($reason): attempt=$attempt after ${backoff}ms")
         delay(backoff)
-        if (disconnecting) {
-            logd("T2 restart: standing down — user is disconnecting")
+        standDownReason()?.let { why ->
+            logd("T2 restart: standing down — $why")
             return RecoveryOutcome.UNRECOVERED_BACKOFF
         }
         restartEngine(reason) ?: return RecoveryOutcome.UNRECOVERED_BACKOFF
@@ -1403,8 +1477,14 @@ class DeltaVpnService : VpnService(), KoinComponent {
      * successful keepalive, which would otherwise be an emission every 8 seconds forever.
      */
     private fun publishStatus(status: ConnectionStatus) {
-        if (status == lastPublishedStatus) return
-        lastPublishedStatus = status
+        // Deduped against the FLOW, never against a field of our own. `PlatformVpnController` writes
+        // `Connecting` and `Disconnecting` straight into the flow without coming through here, so a
+        // private mirror drifts out of date the moment it does — and the reapply path made that fatal:
+        // the mirror still said `Connected` from the previous session while the flow said `Connecting`,
+        // so the `Connected` that ended the reconnect was dropped as a repeat and the UI sat on
+        // "Connecting" forever. `MutableStateFlow` conflates equal values anyway; this is the same
+        // guarantee, read from the one place that is actually authoritative.
+        if (status == AndroidVpnRuntime.status.value) return
         AndroidVpnRuntime.status.value = status
     }
 
@@ -2153,14 +2233,14 @@ class DeltaVpnService : VpnService(), KoinComponent {
             return
         }
         logd("retry ($reason): reconnecting")
-        runConnect(config)
+        runConnect(config, lastStartId)
     }
 
     /**
      * TERMINAL. Only for failures retrying cannot fix — no configuration at all, an allowlist whose
      * apps are gone, permission revoked. Everything network-shaped goes through [scheduleRetry].
      */
-    private fun fail(message: String, category: VpnErrorCategory = VpnErrorCategory.UNKNOWN) {
+    private fun fail(message: String, startId: Int, category: VpnErrorCategory = VpnErrorCategory.UNKNOWN) {
         scope.launch {
             operationMutex.withLock {
                 logd("fail (tearing down): $message")
@@ -2172,8 +2252,7 @@ class DeltaVpnService : VpnService(), KoinComponent {
                 reportSessionEnd(SessionEndReason.FATAL_ERROR)
                 stopTunnel()
                 publishStatus(ConnectionStatus.Error(message))
-                ServiceCompat.stopForeground(this@DeltaVpnService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                stopUnlessRestarted(startId)
                 finishTeardown()
             }
         }
@@ -2186,14 +2265,61 @@ class DeltaVpnService : VpnService(), KoinComponent {
 
     private fun logd(message: String) = OtcLog.log(TAG, message)
 
+    /**
+     * Stop — but only if no NEWER start has arrived since [startId].
+     *
+     * Correct for any start that lands during the SLOW part of a teardown — a user tapping Connect
+     * while `stopTunnel()` is killing `:xray`, for instance.
+     *
+     * It does **not**, on its own, win the `VpnSyncWorker.restartWith` reapply race, and it was a
+     * mistake to claim it did. [runUserDisconnect] publishes `Disconnected` — which is what releases
+     * the worker — on the statement immediately before this one, with no suspension point between them.
+     * The worker parks on a different dispatcher, so its resumption is queued rather than run inline,
+     * and it still has to wake a thread, log, build an intent and issue its own (heavier) AMS
+     * transaction. This thread's `stopServiceToken` gets to AMS first, `stopSelfResult` returns true,
+     * and the service is destroyed anyway. Fixing the reapply needs the teardown taken off that path
+     * entirely — see §14.
+     *
+     * [startId] must be the id of the start that STARTED this teardown, captured synchronously in
+     * [onStartCommand]. Reading [lastStartId] here instead would invert the test — it would be the
+     * newer start's own id, and the service would stop precisely when it must not.
+     */
+    private fun stopUnlessRestarted(startId: Int) {
+        // stopSelfResult, not stopSelf: the boolean is the only way to see this happen on a device, and
+        // it is also what decides the foreground state below.
+        if (!stopSelfResult(startId)) {
+            // Deliberately leaves the foreground notification up. Dropping it here was the first version
+            // of this fix and it was wrong: the newer start has already promoted us and is about to
+            // build a tun, so clearing foreground would leave a VPN running as a background service —
+            // killable, and a broken FGS contract on the very API levels that throw about it.
+            logd("stopSelf($startId) skipped — a newer start is pending; staying foreground for it")
+            return
+        }
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+    }
+
+    /**
+     * Guarded, because this now runs on the teardown starts too and an uncaught throw here would be a
+     * NEW crash on a path that never called it. `startForeground` can refuse (the background-start
+     * rules), and when it does the system stops us regardless — so a logged non-fatal carrying our own
+     * [ErrorDomain] is strictly more useful than an opaque death with a system stack.
+     */
     private fun startAsForeground() {
-        ensureNotificationChannel()
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildNotification(),
-            foregroundServiceType(),
-        )
+        runCatching {
+            ensureNotificationChannel()
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(),
+                foregroundServiceType(),
+            )
+        }.onFailure { error ->
+            // OtcLog needs nothing from the graph; the reporter is a Koin lookup, and this is the
+            // earliest line in onStartCommand — so it gets its own guard rather than a chance to throw
+            // out of the handler for the failure it is reporting.
+            logd("startForeground REFUSED: ${error.message}")
+            runCatching { errorReporter.report(ErrorDomain.VPN_TUNNEL, error) }
+        }
     }
 
     private fun buildNotification(): Notification {

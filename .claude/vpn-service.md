@@ -86,8 +86,9 @@ open across the restart, so the icon does not blink.
   tunnel, **quicParams**).
 
 **Config sync (`feature/connection/logic-impl/.../connection/`)**
-- `VpnSyncWorker.kt` — restarts the tunnel when the active config OR split-tunnel routing changes while
-  connected (`restartWith`).
+- `VpnSyncWorker.kt` — rebuilds the tunnel when the active config OR split-tunnel routing changes while
+  connected (`restartWith`, §13). Takes the orchestrator's `Flow<ConfigSourcesState>` rather than the
+  orchestrator, so the reapply path is unit-testable (`VpnSyncWorkerTest`) without Firestore.
 - `data/VpnConsentRepositoryImpl.kt` — persisted VPN-disclosure acceptance (`vpn_settings` DataStore);
   interface `VpnConsentRepository` in `logic-api/.../domain`. Read by the consent gate (§4).
 
@@ -155,6 +156,14 @@ restart must clear does not live in the engine instance (see §2).
 
 `onRecoverySucceeded` == `noteTunnelHealthy`: clears the retry backoff (`engineRestartAttempt = 0`,
 `retryPending = false`) and publishes `Connected`.
+
+**Standing down.** Every wait point polls `standDownReason()`, which is `disconnecting` OR
+`connectRequested`. The ladder is `NonCancellable` and can sit in T0's patience for the better part of a
+minute, so anything deliberately asked for has to be able to cut in. `connectRequested` is the newer
+half: it is armed in `onStartCommand` on every path into `runConnect` and disarmed once `runConnect`
+holds `operationMutex`. It exists because the settings reapply is now a CONNECT rather than a disconnect
+(§13), and the disconnect it replaced carried `disconnecting` with it. Best-effort by design — a lost
+race costs latency, never the reconnect, which is queued on the mutex regardless.
 
 ### Why T0 owns most of the budget
 Every probe failure ever recorded was a **timeout**, never a socket error. So "no answer" cannot tell a
@@ -369,24 +378,132 @@ transitions, not swallowed.
 ## 13. Config re-apply & split tunnel (`VpnSyncWorker.restartWith`)
 
 Changing config OR **split-tunnel routing** while connected changes `VpnSyncWorker`'s `ConfigKey` →
-`restartWith`. **This is the split-tunnel apply path** — editing exclusions restarts the tunnel to
-apply new routing.
+`restartWith`. **This is the split-tunnel apply path** — editing exclusions rebuilds the tunnel to apply
+new routing (per-app routing is baked into `establish()`; it cannot be changed in place).
 
-`restartWith` **validates BEFORE disconnecting.** Validation runs in `:xray`, which is alive while
-connected; the disconnect KILLS it, and validating after that raced the just-killed process into a
-`DeadObjectException` → "engine unavailable" → the tunnel stayed down until a manual reconnect. Doing it
-first also means a genuinely bad new config never costs the working tunnel.
+### One CONNECT, no disconnect — and why that is not a style choice
+
+`restartWith` sends a **single `connect()` into the live, still-foreground service.** There is no
+`disconnect()`, and no waiting for `Disconnected`.
+
+It used to be disconnect → await `Disconnected` → connect, and **that shape is what crashed the app**
+(§14). `runUserDisconnect` publishes `Disconnected` — the thing that releases the worker — on the
+statement immediately before `stopUnlessRestarted`. The worker resumes on a *different* dispatcher, so
+its resumption is queued rather than run inline, and it then has to wake a thread, log, build an intent
+and issue its own heavier AMS transaction. The teardown's `stopServiceToken` gets there first, every
+time. The service was destroyed, and the connect that landed a moment later had to rebuild it from
+`onCreate` while the FGS deadline armed by that very connect was already running.
+
+A plain CONNECT into a service that is already foreground has no such window: `startAsForeground()`
+satisfies the deadline in the first statement of `onStartCommand`, and nothing stops the service at all.
+
+**Do not "tidy" this back into a disconnect/reconnect pair.** Pinned by
+`VpnSyncWorkerTest` — three of its five cases fail the moment a `disconnect()` reappears.
+
+`restartWith` **validates BEFORE the reconnect.** Validation runs in `:xray`, which the reconnect kills;
+validating after that raced the just-killed process into a `DeadObjectException` → "engine unavailable"
+→ the tunnel stayed down until a manual reconnect. Doing it first also means a genuinely bad new config
+never costs the working tunnel.
+
+`activeKey` is set **before** `connect()`, not after: `connect` publishes `Connecting` synchronously into
+the very flow `restartWith` runs inside, so the `Connected` that follows must find the new key already
+recorded — otherwise the echo reads as another unapplied change and reapplies forever.
+
+### What `runConnect` has to do because the disconnect no longer does it
+
+`runConnect` is now re-entered over a LIVE session, which no other path does. Guarded by
+`tunInterface != null`, it:
+- **`reportSessionEnd(SessionEndReason.RECONNECT)`** — the session genuinely ends (new tun, new engine),
+  and it must be measured before the success block resets `connectedAt` and the keepalive counters.
+
+**It deliberately does NOT cancel `tunnelJob`,** and this is a trap worth spelling out because the
+opposite looks obviously right (the old keepalive is about to probe a tun this function closes).
+Cancelling it loses the guarantee that the new session gets a watcher: `startMonitoring()` at the end of
+`runConnect` can be deferred by the `recovering` guard — an old keepalive's `recover()` blocked on the
+`operationMutex` we are holding reads as `recovering` — and the only thing that ever drains that
+deferral is the tail of that same job. Left alone, both branches end with a watcher (either
+`startTunnelJob` installs one, or the old job's `drainPendingTrigger` does and falls into the
+keepalive). Cancelled, one branch ends with a live tunnel nobody is watching. The cost of leaving it is
+bounded: everything destructive the old loop can reach needs `operationMutex`, which `runConnect` holds
+until the new tunnel is up — at worst it publishes one stale `Connected` or spends one futile ladder
+run.
+
+Deliberately NOT carried over from `runUserDisconnect`: `paramsStore.clear()` (the new params were just
+persisted by `onStartCommand`), `publishStatus(Disconnecting)` (the UI goes Connected → Connecting →
+Connected, which is the truth), and the retry cancellation (`runConnect` clears `retryPending`/`retryJob`
+itself on "xray up").
+
+---
+
+## 13b. The foreground-service contract (`onStartCommand`)
+
+`startAsForeground()` is the **first statement** of `onStartCommand`, and it runs for **every** start —
+CONNECT, DISCONNECT, REVOKE and the null-intent sticky restart alike.
+
+The deadline belongs to the START, not to what the intent means. From the instant anyone calls
+`startForegroundService()`, Android allows a few seconds to reach `startForeground()`; miss it and the
+**whole process** dies with `ForegroundServiceDidNotStartInTimeException`. It is not catchable — the
+system throws it into the main looper.
+
+It used to skip DISCONNECT/REVOKE. That was safe only by accident: `PlatformVpnController.sendStop`
+happens to use `startService()`, which starts no deadline. One call site switching to
+`startForegroundService()` would have made the crash unconditional.
+
+### Stopping: always `stopSelf(startId)`, never `stopSelf()`
+
+Every teardown ends in **`stopUnlessRestarted(startId)`** — there are four (sticky stand-down,
+permission-missing, `runUserDisconnect`, `fail`) and none of them calls `stopSelf()` bare.
+
+`stopSelf(startId)` is a no-op when a NEWER start has arrived. That is correct and worth having for any
+start landing during the slow part of a teardown (a Connect tap while `stopTunnel()` kills `:xray`).
+
+**It was never the fix for the `restartWith` reapply race, and must not be documented as one.** On that
+path the stop always won: `runUserDisconnect` published `Disconnected` — which released the worker — one
+statement before the stop, and a cross-dispatcher wakeup plus an intent build plus an AMS transaction
+cannot beat the next statement. That race is now gone because the reapply no longer disconnects at all
+(§13); this helper covers the remaining case, a start that lands during the SLOW part of a teardown.
+
+Two invariants inside that helper:
+- **[startId] is the id of the start that STARTED this teardown**, captured synchronously in
+  `onStartCommand` and carried down. Reading `lastStartId` at stop time inverts the test — it would be
+  the *newer* start's id, and the service would stop exactly when it must not. `lastStartId` exists only
+  for the paths with no start of their own (`onRevoke`, a retry).
+- **`stopForeground` lives INSIDE the helper**, after the check. When the stop is skipped the
+  notification stays up on purpose: the newer start has already promoted us and is about to build a tun,
+  so clearing foreground would leave a VPN running as a background service.
+
+Two things that look like improvements and are not:
+- **Do not pair it with an immediate `stopForeground` in the teardown branches.** The tun is still up
+  when `onStartCommand` returns; dropping foreground before the teardown has run invites the process to
+  be frozen mid-disconnect. `runUserDisconnect` already ends in `stopUnlessRestarted`, which stops first
+  and drops foreground only if the stop actually took, and it is the only correct place — note it sits inside `operationMutex`, so a recovery ladder can legitimately
+  delay it (see §5).
+- **Do not let it throw.** It is guarded and reports a non-fatal instead: it now also runs on the
+  teardown starts, and `startForeground` can be refused by the background-start rules. When the system
+  refuses it stops us anyway, so a logged `VPN_TUNNEL` non-fatal beats an opaque system stack.
 
 ---
 
 ## 14. Historical bugs — do not reintroduce (each cost real field time)
 
+- **`ForegroundServiceDidNotStartInTimeException` at connect.** Crashlytics, Android 16 / OxygenOS.
+  Reproduced by applying split-tunnel settings to a running tunnel. The thread dump had a coroutine
+  parked in `VpnService.Builder.establish()` → binder → `IVpnManager.establishVpn`, holding
+  `operationMutex`, while the deadline for a *second* start ran out — our own in-flight `establish()`
+  stalls system_server, and `startForeground()` is a binder call into the same place. **Root cause of
+  the second start: `restartWith` disconnected and reconnected**, which destroyed the service and made
+  the reconnect pay for `onCreate` under a deadline that was already running. Fixed by removing the
+  teardown from that path entirely (§13), on top of the unconditional promotion (§13b).
+  **A `stopSelf(startId)` guard was tried first and did not work** — see §13b for why it cannot.
+  Still open: `establish()` is unbounded, and `PlatformVpnController.connect()` fires
+  `startForegroundService` with no check for a connect already in flight.
 - **Two-day reconnect storm.** `retryPending` was cleared only by a confirmed probe, but
   `startTunnelJob` short-circuited to `retryNow` while it was set — so the "connected" self-trigger after
   every reconnect re-fired the connect, and the probe that would clear the flag never ran. Fixed by
   clearing `retryPending` on "xray up" (§10) + `externalTrigger=false` on self-triggers (§8). Trigger
   was "xray is already running" (§12).
 - **Split-tunnel change left the tunnel down** — validate-after-kill race (§13).
+- **Split-tunnel change killed the app process** — the disconnect/reconnect reapply, above.
 - **Overnight hour-long ladder with no network** — 670 futile dials. Fixed: stand down when no usable
   underlying network; abandon if slept mid-ladder (§10).
 - **Telegram "waiting for network" 12 min** — apps wait for a signal, not the tunnel (§7).
@@ -436,12 +553,17 @@ Where each fires — do not double-fire or move these:
   reset per session in `runConnect`) so it fires once, not on every keepalive.
 - `vpn_error` — `fail(message, category)` and the `NotPreparedException` path (category from the call
   site, never `Error.message`).
-- `vpn_session_end` + `vpn_keepalive_health` — `reportSessionEnd(reason)` from `runUserDisconnect(reason)`
-  and `fail()`; no-ops unless the session reached Connected (`connectedAt != null`). Dead/inconclusive
+- `vpn_session_end` + `vpn_keepalive_health` — `reportSessionEnd(reason)` from `runUserDisconnect(reason)`,
+  `fail()`, and `runConnect`'s live-session close-out (`RECONNECT`, §13 — so a reapply is no longer
+  miscounted as a user disconnect). Note this does NOT make the two events balance:
+  `onRecoverySucceeded` fires `vpn_connected(RECOVERY)` inside a live session with no end of its own, so
+  `vpn_connected` legitimately outnumbers `vpn_session_end` — and a reapply still reports `via = FRESH`,
+  which it did before this change too. Do not read either count as "sessions started";
+  no-ops unless the session reached Connected (`connectedAt != null`). Dead/inconclusive
   counts come from `keepAliveLoop` (INCONCLUSIVE = Doze-frozen, counted apart so a freeze ≠ a failure).
 - `vpn_recovery` — once per `runLadder` run, fired in `recover()`. `runLadder` and
-  `restartEngineForRecovery` now **return `RecoveryOutcome?`** (null = user-disconnect stand-down, not
-  reported) purely so `recover()` can report the outcome — no control-flow changed. Trigger is mapped
+  `restartEngineForRecovery` now **return `RecoveryOutcome?`** (null = any `standDownReason()` — a user
+  disconnect OR a connect waiting on the mutex — not reported) purely so `recover()` can report the outcome — no control-flow changed. Trigger is mapped
   from the reason string (`recoveryTriggerOf`); `transport` is the coarse underlying type only; `mode`
   is the `RecoveryMode` the run actually used (resolved once in `recover()` and passed into `runLadder`,
   so a mid-run toggle cannot make the event disagree with the ladder).
